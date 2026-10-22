@@ -1,0 +1,5 @@
+/mpack
+/mpack-linux-amd64
+/mpack-linux-arm64
+*.mpack.tar.gz
+/.panecom/
