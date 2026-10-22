@@ -34,9 +34,9 @@ type CrossOptions struct {
 	// GlobalConfigDir is the host mise config directory to merge in. Empty
 	// means do not merge a global config.
 	GlobalConfigDir string
-	// MpackBin is a host path to an mpack binary built for Target. It is
-	// mounted into the container and does the actual packing.
-	MpackBin string
+	// Unpacker, when non-empty, is an mpack binary for Target to archive as
+	// bin/mpack. Packing itself never needs it: that happens on this machine.
+	Unpacker []byte
 	// Output is the host path of the archive to produce.
 	Output string
 	// Engine is the container CLI to use; empty means "podman".
@@ -66,50 +66,6 @@ func ResolveTarget(target string) (goos, goarch string, err error) {
 		}
 	}
 	return "", "", fmt.Errorf("unsupported --target %q (supported: %s)", target, strings.Join(SupportedTargets, ", "))
-}
-
-// FindCrossMpack locates an mpack binary built for the target platform. It
-// checks the explicit path, then MPACK_TARGET_BIN, then a conventionally named
-// sibling of the running binary and of the working directory.
-func FindCrossMpack(explicit, target string) (string, error) {
-	goos, goarch, err := ResolveTarget(target)
-	if err != nil {
-		return "", err
-	}
-	name := fmt.Sprintf("mpack-%s-%s", goos, goarch)
-
-	var candidates []string
-	if explicit != "" {
-		candidates = append(candidates, explicit)
-	} else {
-		if env := os.Getenv("MPACK_TARGET_BIN"); env != "" {
-			candidates = append(candidates, env)
-		}
-		if self, err := os.Executable(); err == nil {
-			candidates = append(candidates, filepath.Join(filepath.Dir(self), name))
-		}
-		candidates = append(candidates, name)
-	}
-	for _, c := range candidates {
-		abs, err := filepath.Abs(c)
-		if err != nil {
-			continue
-		}
-		if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
-			return abs, nil
-		}
-	}
-	if explicit != "" {
-		return "", fmt.Errorf("--mpack-bin %s does not exist", explicit)
-	}
-	return "", fmt.Errorf(`no %s binary found.
-
-Packing for %s needs an mpack built for that platform, because the pack runs
-inside the container. Build one from this source tree:
-
-    GOOS=%s GOARCH=%s go build -o %s .
-
-then re-run, or point at it with --mpack-bin PATH.`, name, target, goos, goarch, name)
 }
 
 // DefaultGlobalConfigDir returns the host mise global config directory.
@@ -224,11 +180,6 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	mpackBin, err := filepath.Abs(opts.MpackBin)
-	if err != nil {
-		return nil, err
-	}
-
 	// Mirror the project's home-relative path inside the container, so the
 	// archive records the same home_relative_project_path a native pack would
 	// and unpack can still pick its default destination.
@@ -242,13 +193,12 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	containerProject := containerPathFor(project, home, containerHome)
 	configs := collectProjectConfigs(project, home, containerHome)
 
-	// The archive is streamed out over stdout rather than written to a
+	// The payload is streamed out over stdout rather than written to a
 	// mounted directory: bind mounts are not reliably writable from the
 	// container across podman setups (rootless uid mapping, macOS virtiofs),
 	// and a stream has no such failure mode.
 	args := []string{
 		"run", "--rm", "-i", "--platform", opts.Target,
-		"-v", mpackBin + ":/usr/local/bin/mpack:ro",
 		"-e", "HOME=" + containerHome,
 		"-e", "MPACK_CONTAINER_PROJECT=" + containerProject,
 	}
@@ -315,60 +265,47 @@ cd "$MPACK_CONTAINER_PROJECT"
 echo "--- installing tools for the target platform ---" >&2
 mise install --yes >&2
 
-echo "--- packing ---" >&2
+echo "--- collecting ---" >&2
 `)
-	// Everything above logs to stderr so stdout carries only the archive.
-	b.WriteString("mpack pack")
-	for _, e := range opts.Exclude {
-		fmt.Fprintf(&b, " --exclude %s", shellQuoteIfNeeded(e))
-	}
-	if opts.AllowUnresolved {
-		b.WriteString(" --allow-unresolved")
-	}
-	b.WriteString(" -o /tmp/mpack-archive.tar.gz >&2\n")
-	b.WriteString("cat /tmp/mpack-archive.tar.gz\n")
+	// Everything above logs to stderr so stdout carries only the payload.
+	// mise installs the project's tools, then the payload script streams the
+	// result out. mpack is not involved inside the container at all;
+	// --exclude and --allow-unresolved are applied on this machine, against
+	// the payload.
+	b.WriteString(PayloadScript())
 	return b.String()
 }
 
 // RunCross executes the plan, writing the container's log output to logs and
-// the archive it streams on stdout to plan.Output. The output file is only
-// created once the container has succeeded.
-func RunCross(plan *CrossPlan, logs io.Writer) error {
+// the payload it streams on stdout to payloadPath.
+func RunCross(plan *CrossPlan, payloadPath string, logs io.Writer) error {
 	if _, err := exec.LookPath(plan.Engine); err != nil {
-		return fmt.Errorf("%s is not installed; it is required to pack for another platform (use --print-command to run the container yourself)", plan.Engine)
+		return fmt.Errorf("%s is not installed, and packing for another platform needs it: the tools have to be installed on that platform first. --print-command shows that container step, but it only streams a payload for inspection, so it is not a way to produce an archive without %s", plan.Engine, plan.Engine)
 	}
-	if err := os.MkdirAll(filepath.Dir(plan.Output), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(plan.Output), ".mpack-*.tmp")
+	out, err := os.OpenFile(payloadPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName)
-	}()
+	defer out.Close()
 
 	cmd := exec.Command(plan.Engine, plan.Args...)
-	cmd.Stdout = tmp
+	cmd.Stdout = out
 	cmd.Stderr = logs
 	cmd.Stdin = nil
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s run failed: %w", plan.Engine, err)
 	}
-	if err := tmp.Close(); err != nil {
+	if err := out.Close(); err != nil {
 		return err
 	}
-	if fi, err := os.Stat(tmpName); err != nil {
-		return err
-	} else if fi.Size() == 0 {
-		return fmt.Errorf("the container produced no archive")
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	fi, err := os.Stat(payloadPath)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpName, plan.Output)
+	if fi.Size() == 0 {
+		return fmt.Errorf("the container produced no payload")
+	}
+	return nil
 }
 
 // CommandLine renders the plan as a copy-pasteable shell command.

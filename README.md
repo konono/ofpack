@@ -35,22 +35,29 @@ Packing the mise tools active in /Users/you/work/myapp
 Wrote /Users/you/work/myapp/myapp.mpack.tar.gz (96.4 MiB)
 ```
 
-Copy the archive across, together with an `mpack` binary **that runs on the
-target machine**. Here the two machines are the same platform, so it is the
-same binary you just used; when they are not, see
-[Packing for another platform](#packing-for-another-platform).
+Copy the archive across. That is the only file you need: an `mpack` for the
+target platform travels inside it as `bin/mpack`, so the receiving machine
+needs nothing but `tar` to get started.
 
 ```sh
-scp myapp.mpack.tar.gz mpack user@host:~/
+scp myapp.mpack.tar.gz user@host:~/
 ```
 
-On the disconnected machine, from the home directory you copied them into:
+On the disconnected machine, from the home directory you copied it into:
 
 ```sh
-./mpack unpack -f myapp.mpack.tar.gz     # lands in ~/work/myapp/.mpack
+mkdir -p /tmp/mpack-boot
+tar -xzf myapp.mpack.tar.gz -C /tmp/mpack-boot bin/mpack   # just that one member
+/tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz     # lands in ~/work/myapp/.mpack
 source ~/work/myapp/.mpack/activate.sh
 mise ls --current        # the same tools, same versions
 ```
+
+Extracting into a temporary directory keeps the bootstrap from overwriting a
+`bin/mpack` of your own in the current directory. The same binary is installed
+at `~/work/myapp/.mpack/bin/mpack` for later use, so the temporary copy can be
+deleted. `--no-unpacker` leaves it out of the archive if you would rather
+supply your own.
 
 ### Where things land
 
@@ -120,6 +127,7 @@ eval "$(~/work/myapp/.mpack/bin/mise activate fish)"
 ```sh
 mpack inspect -f myapp.mpack.tar.gz   # tools, platform, symlink notes
 mpack pack --target linux/amd64       # pack for another OS (see below)
+mpack pack --no-unpacker              # leave bin/mpack out of the archive
 mpack pack --dry-run                  # what would be packed
 mpack unpack -f a.tar.gz --dry-run    # what would be installed, and where
 mpack pack -C ~/work/myapp            # pack another directory without cd
@@ -132,6 +140,7 @@ mpack pack -C ~/work/myapp            # pack another directory without cd
 | the install directory of every installed **and active** tool | tools that are installed but not active here |
 | `installs/.mise` (mise's install catalog, not a cache) | `downloads/`, `http-tarballs/`, `cache/`, `shims/` |
 | the mise binary, with symlinks resolved to the real file | anything outside the mise installs root |
+| an mpack for the target, as `bin/mpack` | — |
 | a generated `config.toml` pinning exact versions | your project's source files |
 | the names of env vars your mise config sets | **their values** — see below |
 
@@ -179,88 +188,99 @@ macOS tool installs to a Linux machine is not something mpack will do.
 ## Packing for another platform
 
 To get a toolchain onto a *different* OS, the tools have to be installed for
-that OS in the first place. `mpack pack --target` does exactly that: it runs
-mise inside a [Podman](https://podman.io/) container of the target platform on
-your connected machine, installs the project's tools there, and packs them
-there. No host binary ever enters the archive.
-
-Two things are needed on the connected machine: `podman`, and an `mpack` built
-for the target — the pack runs *inside* the container, so the macOS binary
-cannot do it. Build that one first, from this source tree:
-
-```sh
-MPACK_SRC=~/src/mpack                                   # wherever you cloned it
-cd "$MPACK_SRC" && GOOS=linux GOARCH=amd64 go build -o mpack-linux-amd64 .
-```
-
-Then pack the project:
+that OS in the first place. One command does it:
 
 ```sh
 cd ~/work/myapp
-mpack pack --target linux/amd64 \
-  --mpack-bin "$MPACK_SRC/mpack-linux-amd64" \
-  -o myapp.linux-amd64.mpack.tar.gz
+mpack pack --target linux/amd64 -o myapp.linux-amd64.mpack.tar.gz
 ```
 
-(`--mpack-bin` can be left out if `mpack-linux-amd64` sits next to the `mpack`
-you are running, or in the current directory, or `$MPACK_TARGET_BIN` points at
-it.)
-
-The project should live under your home directory. A Podman machine on macOS
-shares only `$HOME` by default, so a project in, say, `/work/myapp` cannot be
-bind mounted into the container and the pack fails; share that path with the
-Podman machine first if you need it.
+mise runs inside a [Podman](https://podman.io/) container of the target
+platform, installs the project's tools there, and streams them back; the
+archive is then built here. No Go toolchain, source checkout or helper script
+is needed, and no binary of this machine's ever enters the archive.
 
 ```
 Packing for linux/amd64 in a container (host is darwin/arm64).
 The tools are installed inside the container, so the archive holds linux/amd64 binaries.
 
 --- installing tools for the target platform ---
-mise ✓ jq@1.8.1  811ms  jq-linux-amd64
---- packing ---
+mise ✓ jq@1.8.1  1.1s  jq-linux-amd64
+--- collecting ---
+building the linux/amd64 unpacker with the local Go toolchain
   jq                           1.8.1
   mise 2026.10.17 (linux/amd64), 1 files, 1 dirs, 0 symlinks, 2.2 MiB
+  includes bin/mpack so the target needs only tar to bootstrap
 
-Wrote /Users/you/work/myapp/myapp.linux-amd64.mpack.tar.gz (57.6 MiB)
+Wrote /Users/you/work/myapp/myapp.linux-amd64.mpack.tar.gz (58.9 MiB)
 ```
 
-Supported targets are `linux/amd64` and `linux/arm64`. There is also a wrapper
-that builds both binaries and runs the pack in one go. It lives in the mpack
-repository, so call it by path from your project:
+Supported targets are `linux/amd64` and `linux/arm64`.
+
+The project should live under your home directory. A Podman machine on macOS
+shares only `$HOME` by default, so a project in, say, `/work/myapp` cannot be
+bind mounted into the container and the pack fails; share that path with the
+Podman machine first if you need it.
+
+Transfer and unpack are the same as for a native archive — one file, and the
+Linux `mpack` is inside it:
 
 ```sh
-cd ~/work/myapp
-~/src/mpack/scripts/pack-linux-amd64.sh myapp.linux-amd64.mpack.tar.gz
+scp myapp.linux-amd64.mpack.tar.gz user@host:~/
 ```
 
-Then copy the archive and the **Linux** mpack binary to the disconnected
-machine. The `mpack` you ran on the Mac is a macOS executable and will not run
-there, so send `mpack-linux-amd64` instead:
-
 ```sh
-scp myapp.linux-amd64.mpack.tar.gz \
-  "$MPACK_SRC/mpack-linux-amd64" user@host:~/
-```
-
-and on the disconnected Linux machine:
-
-```sh
-./mpack-linux-amd64 unpack -f myapp.linux-amd64.mpack.tar.gz
+mkdir -p /tmp/mpack-boot
+tar -xzf myapp.linux-amd64.mpack.tar.gz -C /tmp/mpack-boot bin/mpack
+/tmp/mpack-boot/bin/mpack unpack -f myapp.linux-amd64.mpack.tar.gz
 source ~/work/myapp/.mpack/activate.sh
-mise ls --current
 ```
-
-(Run these from the home directory you copied the two files into.)
-
-It unpacks exactly like a native archive, into the same
-`~/work/myapp/.mpack` default destination.
 
 ### How it works, and what it needs
 
-Inside the container mpack mirrors your project's home-relative path, copies
-*only* mise's own config files into it (`mise.toml`, `.tool-versions`, and
-friends — never your source), merges your global mise config, installs mise
-and then the tools, and streams the finished archive back out over stdout.
+Two containers are involved, and mpack itself runs in neither:
+
+1. **The tools**, in an image of the *target* platform. mise installs them,
+   then a small script hands back one gzipped tar: the install trees, the mise
+   binary, and metadata (`mise ls --current --json`, `mise bin-paths`, the
+   mise version). The archive — symlink classification, the manifest, the
+   generated config — is built from that stream on this machine, which is why
+   no target-platform mpack is needed to pack.
+2. **The bundled unpacker**, only when this machine has no Go. mpack carries
+   its own source, embedded, and builds a static `linux/<arch>` binary from
+   it. With a Go toolchain of **go1.25 or newer** on `PATH` that happens
+   locally in a second and no image is pulled at all; otherwise
+   `docker.io/library/golang:1.25-bookworm` is used.
+
+   go1.25 is above the go.mod directive on purpose, and the floor is the same
+   for both routes: a binary built by go1.24 segfaults in `runtime.netpoll`
+   during unpack when it is run under an emulated amd64, which is how a
+   cross-built archive usually gets tried out first. go1.25 is the oldest
+   version whose output was verified to unpack correctly there, so a go1.24
+   toolchain on `PATH` is passed over in favour of the image rather than
+   trusted. Compiling mpack itself still only needs go1.24. That container runs on
+   *this machine's* architecture and cross compiles, because a Go toolchain
+   emulating a foreign architecture crashes rather than building. The result
+   is checked to be an ELF binary of the right machine type before it goes
+   into the archive.
+
+`--mpack-bin` supplies a prebuilt unpacker and skips step 2 entirely — it is
+checked to be an executable of the right format and machine type first, since
+bundling the wrong one would break the single-file bootstrap.
+`--builder-image` changes the image step 2 uses. `--print-command` prints the
+first container's invocation instead of running it; note that this is the
+tool-installation step alone, which streams a payload rather than a finished
+archive, so it is for inspection rather than a way to pack elsewhere.
+
+Only environment variable **names** cross the container boundary. mise config
+`[env]` entries can hold secrets, so the values are filtered out inside the
+container and never reach this machine — not the manifest, not the temporary
+payload, not memory. Version precedence comes from `mise bin-paths`, which
+carries no values at all.
+
+Inside the container mpack mirrors your project's path, copies *only* mise's
+own config files into it (`mise.toml`, `.tool-versions`, and friends — never
+your source), and merges your global mise config.
 
 mise reads config from parent directories as well, so the config files of
 every directory above the project are carried too, each at its mirrored
@@ -268,15 +288,8 @@ location: `~/work/mise.toml` still applies to `~/work/myapp`. For a project
 outside your home directory the walk goes up to the filesystem root and the
 paths are reproduced as they are, so `/work/mise.toml` still applies to
 `/work/myapp` (where the Podman machine shares that path). A project with no
-config of its own, relying entirely on your
-global mise config, packs fine; only having no configuration at all is an
-error.
-
-mpack looks for the target binary as `--mpack-bin PATH`, then
-`$MPACK_TARGET_BIN`, then `mpack-<os>-<arch>` next to the running binary or in
-the current directory; if it finds none it prints the exact `go build` command
-to run. When podman is unavailable, `--print-command` prints the container
-invocation so you can run it elsewhere.
+config of its own, relying entirely on your global mise config, packs fine;
+only having no configuration at all is an error.
 
 ### glibc compatibility
 
@@ -411,12 +424,13 @@ go test ./...
 ```
 
 The cross-platform path was verified on macOS/arm64 with Podman: packing
-`--target linux/amd64`, then unpacking the result in a fresh linux/amd64
-container and running the packed tool from it.
+`--target linux/amd64`, then bootstrapping the result in a fresh linux/amd64
+container with nothing but `tar` and the bundled `bin/mpack`, and running the
+packed tool from it.
 
-The end-to-end test packs a real tool, unpacks it into an isolated `HOME`, and
-checks that the bundled mise finds and resolves it offline. It needs mise and
-an already installed tool, so it is opt in:
+The end-to-end tests pack a real tool, unpack it into an isolated `HOME`, and
+check that the bundled mise finds and resolves it offline. They need mise and
+an already installed tool, so they are opt in:
 
 ```sh
 MPACK_E2E_TOOL='jq@1.8.1' go test ./... -run EndToEnd

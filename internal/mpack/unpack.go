@@ -141,6 +141,9 @@ func unitsFor(m *Manifest) []unit {
 		{archivePrefix: MiseBinName, destRel: filepath.FromSlash(MiseBinName), isFile: true},
 		{archivePrefix: ConfigName, destRel: filepath.FromSlash(ConfigName), isFile: true},
 	}
+	if m.HasUnpacker {
+		units = append(units, unit{archivePrefix: UnpackerName, destRel: filepath.FromSlash(UnpackerName), isFile: true})
+	}
 	for _, t := range m.Tools {
 		p := path.Join(InstallsPrefix, t.RelPath)
 		units = append(units, unit{archivePrefix: p, destRel: filepath.FromSlash(p)})

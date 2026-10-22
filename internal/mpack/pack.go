@@ -43,6 +43,17 @@ type Plan struct {
 	Units []string
 	// entries is every archived item, in archive order.
 	entries []entry
+
+	// payloadPath, when set, is a gzipped tar from a target-platform
+	// container holding the files instead of the local filesystem. The
+	// symlink maths still uses InstallsRoot, which is then the root *inside
+	// the container*, because that is what the links were written against.
+	payloadPath string
+	// byName indexes the payload entries that survived classification.
+	byName map[string]entry
+	// unpacker, when set, is an mpack binary that runs on the target; it is
+	// archived as bin/mpack so the target needs nothing but tar to bootstrap.
+	unpacker []byte
 }
 
 type entry struct {
@@ -153,6 +164,172 @@ func (p *Plan) inPackedSet(rel string) bool {
 	return false
 }
 
+// BuildPlanFromPayload turns a container payload into a plan. The tools were
+// installed for the target platform inside the container; everything from
+// here on - classification, the manifest, the archive itself - runs on this
+// machine, so no target-platform mpack is needed to pack.
+func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (*Plan, error) {
+	goos, goarch, err := ResolveTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(payloadPath)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := readPayloadMeta(f)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	tools, err := payloadToolsFromMeta(meta)
+	if err != nil {
+		return nil, err
+	}
+
+	excluded := map[string]bool{}
+	for _, name := range opts.Exclude {
+		excluded[name] = true
+	}
+	kept := tools[:0:0]
+	for _, t := range tools {
+		if excluded[t.Name] {
+			delete(excluded, t.Name)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	for name := range excluded {
+		return nil, fmt.Errorf("--exclude %s: the container did not install a tool by that name", name)
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("every tool the container installed was excluded; nothing to pack")
+	}
+
+	workDir := opts.WorkDir
+	if workDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		workDir = wd
+	}
+	workDir, err = filepath.Abs(workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	units := make([]string, 0, len(kept)+1)
+	for _, t := range kept {
+		units = append(units, t.RelPath)
+	}
+	sort.Strings(units)
+
+	p := &Plan{
+		InstallsRoot: meta.installsRoot,
+		Units:        units,
+		payloadPath:  payloadPath,
+		Manifest: Manifest{
+			Schema:       SchemaVersion,
+			MpackVersion: opts.Version,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+			// The archive describes the platform it was built for, which is
+			// the container's, not this machine's.
+			OS:                      goos,
+			Arch:                    goarch,
+			MiseVersion:             meta.miseVersion,
+			Tools:                   kept,
+			EnvVarNames:             meta.envNames,
+			HomeRelativeProjectPath: relToHome(workDir),
+		},
+	}
+	if err := p.scanPayloadEntries(opts); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// scanPayloadEntries classifies everything the container sent.
+func (p *Plan) scanPayloadEntries(opts PackOptions) error {
+	var fixed, unresolved []LinkNote
+	p.byName = map[string]entry{}
+	hasMise := false
+
+	err := scanPayload(p.payloadPath, func(pe payloadEntry) error {
+		switch {
+		case pe.name == MiseBinName:
+			hasMise = true
+			p.byName[pe.name] = entry{name: pe.name}
+			return nil
+		case pe.name == InstallsPrefix || strings.HasPrefix(pe.name, InstallsPrefix+"/"):
+		default:
+			return nil // nothing else from the container is archived
+		}
+		rel, ok := strings.CutPrefix(pe.name, InstallsPrefix+"/")
+		if !ok {
+			return nil // the installs directory entry itself
+		}
+		if rel == CatalogDir || strings.HasPrefix(rel, CatalogDir+"/") {
+			if !p.Manifest.HasCatalog {
+				p.Manifest.HasCatalog = true
+				p.Units = append(p.Units, CatalogDir)
+				sort.Strings(p.Units)
+			}
+		} else if !p.inPackedSet(rel) {
+			return nil // an excluded tool, or one mise did not activate
+		}
+
+		e := entry{name: pe.name}
+		switch pe.hdr.Typeflag {
+		case tar.TypeSymlink:
+			// Resolve against the container path the link was written at.
+			src := path.Join(p.InstallsRoot, rel)
+			stored, note, kind, err := p.classifyLink(src, rel, pe.hdr.Linkname)
+			if err != nil {
+				return err
+			}
+			switch kind {
+			case linkFixed:
+				fixed = append(fixed, note)
+			case linkUnresolved:
+				unresolved = append(unresolved, note)
+				return nil
+			}
+			e.linkTarget = stored
+			p.Manifest.Stats.Symlinks++
+		case tar.TypeDir:
+			p.Manifest.Stats.Dirs++
+		default:
+			p.Manifest.Stats.Files++
+			p.Manifest.Stats.Bytes += pe.hdr.Size
+		}
+		p.byName[pe.name] = e
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !hasMise {
+		return fmt.Errorf("the container payload has no %s", MiseBinName)
+	}
+	// Metadata can name a tool the payload does not actually carry, for
+	// instance if tar failed part way through. Writing that out would make a
+	// well formed archive with a tool directory missing from it, so the gap
+	// is caught here instead.
+	var missing []string
+	for _, u := range p.Units {
+		if _, ok := p.byName[path.Join(InstallsPrefix, u)]; !ok {
+			missing = append(missing, u)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the container payload is incomplete: no files for %s", strings.Join(missing, ", "))
+	}
+	p.Manifest.RewrittenLinks = fixed
+	p.Manifest.UnresolvedLinks = unresolved
+	return p.reportUnresolved(unresolved, opts)
+}
+
 func (p *Plan) scan(opts PackOptions) error {
 	var fixed, unresolved, dangling []LinkNote
 
@@ -215,22 +392,29 @@ func (p *Plan) scan(opts PackOptions) error {
 	p.Manifest.DanglingLinks = dangling
 	p.Manifest.UnresolvedLinks = unresolved
 
-	if len(unresolved) > 0 {
-		if !opts.AllowUnresolved {
-			var b strings.Builder
-			fmt.Fprintf(&b, "%d symlink(s) cannot be relocated:\n", len(unresolved))
-			for _, n := range unresolved {
-				target := n.Target
-				if target == "" {
-					target = "(target outside the home directory, omitted from the manifest)"
-				}
-				fmt.Fprintf(&b, "  %s -> %s (%s)\n", n.Path, target, n.Reason)
-			}
-			b.WriteString("re-run with --exclude <tool> to drop the affected tool, or --allow-unresolved to pack anyway (the links will be missing on the target)")
-			return fmt.Errorf("%s", b.String())
-		}
-		logf(opts.Log, "warning: packing without %d unrelocatable symlink(s); see the manifest\n", len(unresolved))
+	return p.reportUnresolved(unresolved, opts)
+}
+
+// reportUnresolved turns links that cannot survive relocation into an error,
+// unless the caller opted in to packing without them.
+func (p *Plan) reportUnresolved(unresolved []LinkNote, opts PackOptions) error {
+	if len(unresolved) == 0 {
+		return nil
 	}
+	if !opts.AllowUnresolved {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d symlink(s) cannot be relocated:\n", len(unresolved))
+		for _, n := range unresolved {
+			target := n.Target
+			if target == "" {
+				target = "(target outside the home directory, omitted from the manifest)"
+			}
+			fmt.Fprintf(&b, "  %s -> %s (%s)\n", n.Path, target, n.Reason)
+		}
+		b.WriteString("re-run with --exclude <tool> to drop the affected tool, or --allow-unresolved to pack anyway (the links will be missing on the target)")
+		return fmt.Errorf("%s", b.String())
+	}
+	logf(opts.Log, "warning: packing without %d unrelocatable symlink(s); see the manifest\n", len(unresolved))
 	return nil
 }
 
@@ -286,20 +470,33 @@ func (p *Plan) Write(w io.Writer) error {
 	if err := writeBytes(tw, ManifestName, 0o644, manifestJSON, now); err != nil {
 		return err
 	}
-	miseBin, err := os.ReadFile(p.Env.Bin)
-	if err != nil {
-		return err
-	}
-	if err := writeBytes(tw, MiseBinName, 0o755, miseBin, now); err != nil {
-		return err
+	if len(p.unpacker) > 0 {
+		if err := writeBytes(tw, UnpackerName, 0o755, p.unpacker, now); err != nil {
+			return err
+		}
 	}
 	if err := writeBytes(tw, ConfigName, 0o644, RenderConfig(p.Manifest.Tools), now); err != nil {
 		return err
 	}
 
-	for _, e := range p.entries {
-		if err := writeEntry(tw, e); err != nil {
-			return fmt.Errorf("%s: %w", e.src, err)
+	if p.payloadPath != "" {
+		// The files came from a container; stream them straight through,
+		// using the headers classification already approved.
+		if err := copyPayloadBodies(p.payloadPath, p.byName, tw); err != nil {
+			return err
+		}
+	} else {
+		miseBin, err := os.ReadFile(p.Env.Bin)
+		if err != nil {
+			return err
+		}
+		if err := writeBytes(tw, MiseBinName, 0o755, miseBin, now); err != nil {
+			return err
+		}
+		for _, e := range p.entries {
+			if err := writeEntry(tw, e); err != nil {
+				return fmt.Errorf("%s: %w", e.src, err)
+			}
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -307,6 +504,17 @@ func (p *Plan) Write(w io.Writer) error {
 	}
 	return gz.Close()
 }
+
+// SetUnpacker attaches an mpack binary that runs on the archive's target
+// platform. It is stored as bin/mpack so the receiving machine can bootstrap
+// with nothing but tar.
+func (p *Plan) SetUnpacker(b []byte) {
+	p.unpacker = b
+	p.Manifest.HasUnpacker = len(b) > 0
+}
+
+// HasUnpacker reports whether a bootstrap binary is attached.
+func (p *Plan) HasUnpacker() bool { return len(p.unpacker) > 0 }
 
 func writeBytes(tw *tar.Writer, name string, mode int64, data []byte, mod time.Time) error {
 	hdr := &tar.Header{

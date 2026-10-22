@@ -30,31 +30,28 @@ Typical flow:
   cd ~/work/myapp
   mpack pack -o myapp.mpack.tar.gz
 
-  # copy the archive, plus an mpack binary that runs on the target machine
-  # (the same one here; for a different OS see --target below)
-  scp myapp.mpack.tar.gz mpack user@host:~/
+  # one file to copy: an mpack for the target travels inside it
+  scp myapp.mpack.tar.gz user@host:~/
 
   # on the disconnected machine, from your home directory
-  ./mpack unpack -f myapp.mpack.tar.gz          # lands in ~/work/myapp/.mpack
+  mkdir -p /tmp/mpack-boot
+  tar -xzf myapp.mpack.tar.gz -C /tmp/mpack-boot bin/mpack
+  /tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz
   source ~/work/myapp/.mpack/activate.sh
+
+Extracting into a temporary directory avoids overwriting a bin/mpack of your
+own; the same binary is installed under the destination for later use.
 
 A project outside your home directory has no default destination, so pass
 --dest when unpacking it:
-  ./mpack unpack -f myapp.mpack.tar.gz --dest /work/myapp/.mpack
+  /tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz --dest /work/myapp/.mpack
 
-Targeting another OS (the tools are installed in a Podman container of that
-platform, so the archive holds its binaries, not this machine's). The pack
-runs inside the container, so build an mpack for the target first, and send
-that one across rather than this binary:
-  cd /path/to/mpack && GOOS=linux GOARCH=amd64 go build -o mpack-linux-amd64 .
+Targeting another OS needs no extra steps: the tools are installed in a
+Podman container of that platform, and the bundled unpacker is built for it
+too, so the archive is still the only file to copy:
   cd ~/work/myapp
-  mpack pack --target linux/amd64 \
-    --mpack-bin /path/to/mpack/mpack-linux-amd64 \
-    -o myapp.linux-amd64.mpack.tar.gz
-  scp myapp.linux-amd64.mpack.tar.gz \
-    /path/to/mpack/mpack-linux-amd64 user@host:~/
-  ssh user@host './mpack-linux-amd64 unpack -f myapp.linux-amd64.mpack.tar.gz'
-  # then on that machine: source ~/work/myapp/.mpack/activate.sh
+  mpack pack --target linux/amd64 -o myapp.linux-amd64.mpack.tar.gz
+  scp myapp.linux-amd64.mpack.tar.gz user@host:~/
 
 Run "mpack <command> -h" for the flags of a command.
 `
@@ -100,7 +97,7 @@ func cmdPack(args []string) error {
 
 Packs every mise tool that is installed and active in the working directory,
 i.e. the merged result of your global and local mise configuration, together
-with the mise binary itself.
+with the mise binary itself and an mpack for the target platform.
 
   cd /work/myapp && mpack pack -o myapp.mpack.tar.gz
 
@@ -115,10 +112,12 @@ Flags:
 	allowUnresolved := fs.Bool("allow-unresolved", false, "pack even if some symlinks cannot be relocated (they will be missing on the target)")
 	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing an archive")
 	target := fs.String("target", "", "pack for another platform by installing the tools in a container, e.g. linux/amd64")
-	image := fs.String("image", "", "container image for --target (default "+mpack.DefaultCrossImage+")")
+	image := fs.String("image", "", "container image the tools are installed in for --target (default "+mpack.DefaultCrossImage+")")
+	builderImage := fs.String("builder-image", "", "container image used to build the bundled unpacker when this machine has no Go (default "+mpack.DefaultBuilderImage+")")
 	engine := fs.String("engine", "podman", "container engine for --target")
-	mpackBin := fs.String("mpack-bin", "", "mpack binary built for --target (default: ./mpack-<os>-<arch>)")
-	printCommand := fs.Bool("print-command", false, "with --target, print the container command instead of running it")
+	mpackBin := fs.String("mpack-bin", "", "use this prebuilt mpack as the bundled unpacker instead of building one")
+	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+mpack.UnpackerName+"; the target will need its own mpack")
+	printCommand := fs.Bool("print-command", false, "with --target, print the tool-installation container command (which streams a payload, not a finished archive) instead of running it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -145,7 +144,8 @@ Flags:
 	}
 
 	if *target != "" && *target != mpack.HostPlatform() {
-		return crossPack(*target, outName, workDir, *image, *engine, *mpackBin, exclude, *allowUnresolved, *printCommand, *dryRun)
+		return crossPack(*target, outName, workDir, *image, *builderImage, *engine, *mpackBin,
+			exclude, *allowUnresolved, *noUnpacker, *printCommand, *dryRun)
 	}
 
 	fmt.Fprintf(os.Stderr, "Packing the mise tools active in %s\n", workDir)
@@ -160,19 +160,10 @@ Flags:
 		return err
 	}
 
-	m := plan.Manifest
-	for _, t := range m.Tools {
-		fmt.Fprintf(os.Stderr, "  %-28s %s\n", t.Name, t.Version)
+	if err := attachUnpacker(plan, mpack.HostTarget(), *mpackBin, *builderImage, *engine, *noUnpacker); err != nil {
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "  mise %s (%s/%s), %d files, %d dirs, %d symlinks, %s\n",
-		m.MiseVersion, m.OS, m.Arch, m.Stats.Files, m.Stats.Dirs, m.Stats.Symlinks, humanBytes(m.Stats.Bytes))
-	if n := len(m.DanglingLinks); n > 0 {
-		fmt.Fprintf(os.Stderr, "  note: %d symlink(s) already dangle on this machine; recorded in the manifest\n", n)
-	}
-	if len(m.EnvVarNames) > 0 {
-		fmt.Fprintf(os.Stderr, "  note: config sets %d env var(s) (%s); mpack records only their names, never their values\n",
-			len(m.EnvVarNames), strings.Join(m.EnvVarNames, ", "))
-	}
+	reportPlan(plan)
 	if *dryRun {
 		fmt.Fprintln(os.Stderr, "dry run: no archive written")
 		return nil
@@ -182,9 +173,139 @@ Flags:
 	if err != nil {
 		return err
 	}
-	// Write to a temporary file and rename, so an interrupted pack never
-	// leaves a half-written archive that looks usable.
-	tmp, err := os.CreateTemp(filepath.Dir(archivePath), ".mpack-*.tmp")
+	return writeArchive(plan, archivePath)
+}
+
+func crossPack(target, outName, workDir, image, builderImage, engine, mpackBin string, exclude []string, allowUnresolved, noUnpacker, printOnly, dryRun bool) error {
+	output, err := filepath.Abs(outName)
+	if err != nil {
+		return err
+	}
+	plan, err := mpack.BuildCrossPlan(mpack.CrossOptions{
+		Target:          target,
+		Image:           image,
+		ProjectDir:      workDir,
+		GlobalConfigDir: mpack.DefaultGlobalConfigDir(),
+		Output:          output,
+		Engine:          engine,
+		Exclude:         exclude,
+		AllowUnresolved: allowUnresolved,
+	})
+	if err != nil {
+		return err
+	}
+	if printOnly {
+		// This is the tool-installation step only. It streams a payload, not
+		// a finished archive: the archive is assembled here afterwards, from
+		// that payload.
+		fmt.Println("# Installs the tools for " + target + " and streams a payload on stdout.")
+		fmt.Println("# This is one step of the pack, not the whole of it: mpack builds the")
+		fmt.Println("# archive from the payload afterwards. Printed for inspection.")
+		fmt.Println(plan.CommandLine())
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Packing for %s in a container (host is %s).\nThe tools are installed inside the container, so the archive holds %s binaries.\n\n",
+		target, mpack.HostPlatform(), target)
+
+	tmpDir, err := os.MkdirTemp(filepath.Dir(output), ".mpack-payload-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	payload := filepath.Join(tmpDir, "payload.tar.gz")
+	if err := mpack.RunCross(plan, payload, os.Stderr); err != nil {
+		return err
+	}
+
+	packPlan, err := mpack.BuildPlanFromPayload(payload, target, mpack.PackOptions{
+		WorkDir:         workDir,
+		Exclude:         exclude,
+		AllowUnresolved: allowUnresolved,
+		Version:         version,
+		Log:             os.Stderr,
+	})
+	if err != nil {
+		return err
+	}
+	if err := attachUnpacker(packPlan, target, mpackBin, builderImage, engine, noUnpacker); err != nil {
+		return err
+	}
+	reportPlan(packPlan)
+	if dryRun {
+		fmt.Fprintln(os.Stderr, "dry run: no archive written")
+		return nil
+	}
+	return writeArchive(packPlan, output)
+}
+
+// attachUnpacker puts an mpack for the archive's own platform inside it.
+func attachUnpacker(plan *mpack.Plan, target, mpackBin, builderImage, engine string, noUnpacker bool) error {
+	if noUnpacker {
+		return nil
+	}
+	if mpackBin != "" {
+		data, err := os.ReadFile(mpackBin)
+		if err != nil {
+			return fmt.Errorf("--mpack-bin: %w", err)
+		}
+		// A binary that does not run on the target would break the one-file
+		// bootstrap, so one supplied by hand is checked as closely as one
+		// mpack builds itself.
+		if err := mpack.VerifyUnpacker(data, target); err != nil {
+			return fmt.Errorf("--mpack-bin %s is not an executable for %s: %w", mpackBin, target, err)
+		}
+		plan.SetUnpacker(data)
+		return nil
+	}
+	if target == mpack.HostTarget() {
+		data, err := mpack.SelfBinary()
+		if err != nil {
+			return fmt.Errorf("reading this mpack binary to carry along: %w", err)
+		}
+		if err := mpack.VerifyUnpacker(data, target); err != nil {
+			return fmt.Errorf("this mpack binary does not look like a %s executable: %w", target, err)
+		}
+		plan.SetUnpacker(data)
+		return nil
+	}
+	data, err := mpack.UnpackerBuilder{
+		Source: embeddedSource(),
+		Image:  builderImage,
+		Engine: engine,
+		Log:    os.Stderr,
+	}.Build(target)
+	if err != nil {
+		return err
+	}
+	plan.SetUnpacker(data)
+	return nil
+}
+
+// reportPlan prints the human summary of what is about to be archived.
+func reportPlan(plan *mpack.Plan) {
+	m := plan.Manifest
+	for _, t := range m.Tools {
+		fmt.Fprintf(os.Stderr, "  %-28s %s\n", t.Name, t.Version)
+	}
+	fmt.Fprintf(os.Stderr, "  mise %s (%s/%s), %d files, %d dirs, %d symlinks, %s\n",
+		m.MiseVersion, m.OS, m.Arch, m.Stats.Files, m.Stats.Dirs, m.Stats.Symlinks, humanBytes(m.Stats.Bytes))
+	if plan.HasUnpacker() {
+		fmt.Fprintf(os.Stderr, "  includes %s so the target needs only tar to bootstrap\n", mpack.UnpackerName)
+	}
+	if n := len(m.DanglingLinks); n > 0 {
+		fmt.Fprintf(os.Stderr, "  note: %d symlink(s) already dangle on this machine; recorded in the manifest\n", n)
+	}
+	if len(m.EnvVarNames) > 0 {
+		fmt.Fprintf(os.Stderr, "  note: config sets %d env var(s) (%s); mpack records only their names, never their values\n",
+			len(m.EnvVarNames), strings.Join(m.EnvVarNames, ", "))
+	}
+}
+
+// writeArchive writes the plan to target via a temporary file, so an
+// interrupted pack never leaves a half-written archive that looks usable.
+func writeArchive(plan *mpack.Plan, target string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".mpack-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -202,57 +323,14 @@ Flags:
 	if err := os.Chmod(tmpName, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, archivePath); err != nil {
+	if err := os.Rename(tmpName, target); err != nil {
 		return err
 	}
-	fi, err := os.Stat(archivePath)
+	fi, err := os.Stat(target)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", archivePath, humanBytes(fi.Size()))
-	return nil
-}
-
-// crossPack packs for a different platform by installing the project's tools
-// inside a container of that platform. The host's own tool binaries are never
-// archived: everything in the result is built for the target.
-func crossPack(target, outName, workDir, image, engine, mpackBin string, exclude []string, allowUnresolved, printOnly, dryRun bool) error {
-	bin, err := mpack.FindCrossMpack(mpackBin, target)
-	if err != nil {
-		return err
-	}
-	output, err := filepath.Abs(outName)
-	if err != nil {
-		return err
-	}
-	plan, err := mpack.BuildCrossPlan(mpack.CrossOptions{
-		Target:          target,
-		Image:           image,
-		ProjectDir:      workDir,
-		GlobalConfigDir: mpack.DefaultGlobalConfigDir(),
-		MpackBin:        bin,
-		Output:          output,
-		Engine:          engine,
-		Exclude:         exclude,
-		AllowUnresolved: allowUnresolved,
-	})
-	if err != nil {
-		return err
-	}
-	if printOnly || dryRun {
-		fmt.Println(plan.CommandLine())
-		return nil
-	}
-	fmt.Fprintf(os.Stderr, "Packing for %s in a container (host is %s).\nThe tools are installed inside the container, so the archive holds %s binaries.\n\n",
-		target, mpack.HostPlatform(), target)
-	if err := mpack.RunCross(plan, os.Stderr); err != nil {
-		return err
-	}
-	fi, err := os.Stat(output)
-	if err != nil {
-		return fmt.Errorf("the container finished but produced no archive at %s: %w", output, err)
-	}
-	fmt.Fprintf(os.Stderr, "\nWrote %s (%s)\nCheck it with: mpack inspect -f %s\n", output, humanBytes(fi.Size()), output)
+	fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", target, humanBytes(fi.Size()))
 	return nil
 }
 
@@ -263,6 +341,12 @@ func cmdUnpack(args []string) error {
 
 Unpacks an archive into a self contained mise data directory. No network
 access is performed or required.
+
+Archives carry an mpack for their own platform at bin/mpack, so on a machine
+without mpack you can bootstrap with tar alone:
+  mkdir -p /tmp/mpack-boot
+  tar -xzf ARCHIVE -C /tmp/mpack-boot bin/mpack
+  /tmp/mpack-boot/bin/mpack unpack -f ARCHIVE
 
 With no --dest, the source project's home-relative path is reproduced under
 your own home and the toolchain goes in its .mpack subdirectory, so

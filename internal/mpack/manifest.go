@@ -7,8 +7,11 @@ package mpack
 //	config/config.toml     generated global config pinning exact versions
 //	installs/<rel>/...     one subtree per packed tool, plus installs/.mise
 const (
-	ManifestName   = "manifest.json"
-	MiseBinName    = "bin/mise"
+	ManifestName = "manifest.json"
+	MiseBinName  = "bin/mise"
+	// UnpackerName is an mpack binary for the archive's own platform, so the
+	// receiving machine can unpack with nothing but tar to bootstrap.
+	UnpackerName   = "bin/mpack"
 	ConfigName     = "config/config.toml"
 	InstallsPrefix = "installs"
 
@@ -48,6 +51,9 @@ type Manifest struct {
 
 	Tools      []Tool `json:"tools"`
 	HasCatalog bool   `json:"has_catalog"`
+	// HasUnpacker records whether bin/mpack is present, so unpack installs it
+	// alongside everything else.
+	HasUnpacker bool `json:"has_unpacker,omitempty"`
 
 	// EnvVarNames lists the names of environment variables that the source
 	// mise configuration would set. Values are deliberately never recorded:

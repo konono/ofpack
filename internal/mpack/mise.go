@@ -213,6 +213,13 @@ func sortToolsByPrecedence(tools []Tool, rank map[string]int) {
 // the tool contributes nothing to PATH; for a tool with several active
 // versions that is fatal, see verifyPrecedenceKnown.
 func precedenceRanks(env Env, workDir, installsRoot string) (map[string]int, error) {
+	// `mise bin-paths` lists the tool bin directories in precedence order and
+	//, unlike `mise env`, carries no environment values at all, so no secret
+	// is ever read. Older mise versions lack it; fall back to the PATH mise
+	// would export.
+	if out, err := runMise(env.Bin, workDir, "bin-paths"); err == nil {
+		return RanksFromBinPaths(strings.Split(string(out), "\n"), installsRoot), nil
+	}
 	vars, err := miseEnv(env, workDir)
 	if err != nil {
 		return nil, err
@@ -222,14 +229,24 @@ func precedenceRanks(env Env, workDir, installsRoot string) (map[string]int, err
 
 // ranksFromPath is the pure part of precedenceRanks.
 func ranksFromPath(pathValue, installsRoot string) map[string]int {
+	return RanksFromBinPaths(filepath.SplitList(pathValue), installsRoot)
+}
+
+// RanksFromBinPaths turns an ordered list of bin directories into a map from
+// a tool's install-relative path to its precedence, lowest first.
+func RanksFromBinPaths(entries []string, installsRoot string) map[string]int {
 	ranks := map[string]int{}
-	for _, entry := range filepath.SplitList(pathValue) {
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
 		rel, ok := RelUnder(filepath.Clean(installsRoot), filepath.Clean(entry))
 		if !ok {
 			continue
 		}
-		// A PATH entry is usually <tool>/<version>/bin; the tool directory is
-		// its first two components.
+		// An entry is usually <tool>/<version>/bin; the tool directory is its
+		// first two components.
 		parts := strings.Split(rel, "/")
 		if len(parts) < 2 {
 			continue

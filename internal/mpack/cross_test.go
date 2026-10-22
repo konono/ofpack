@@ -18,38 +18,6 @@ func TestResolveTargetRejectsUnsupportedPlatforms(t *testing.T) {
 	}
 }
 
-func TestFindCrossMpackExplainsHowToBuildTheBinary(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("MPACK_TARGET_BIN", "")
-	t.Chdir(dir)
-
-	_, err := FindCrossMpack("", "linux/amd64")
-	if err == nil {
-		t.Fatal("expected an error when no target binary exists")
-	}
-	for _, want := range []string{"GOOS=linux", "GOARCH=amd64", "mpack-linux-amd64", "--mpack-bin"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error should mention %q:\n%s", want, err)
-		}
-	}
-
-	// A conventionally named binary in the working directory is picked up.
-	bin := filepath.Join(dir, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got, err := FindCrossMpack("", "linux/amd64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Base(got) != "mpack-linux-amd64" {
-		t.Fatalf("found %q", got)
-	}
-	if _, err := FindCrossMpack("/nope/mpack", "linux/amd64"); err == nil {
-		t.Fatal("an explicit missing path should be reported")
-	}
-}
-
 func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -64,17 +32,12 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	if err := os.MkdirAll(global, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	outDir := t.TempDir()
 
 	plan, err := BuildCrossPlan(CrossOptions{
 		Target:          "linux/amd64",
 		ProjectDir:      project,
 		GlobalConfigDir: global,
-		MpackBin:        bin,
 		Output:          filepath.Join(outDir, "myapp.tar.gz"),
 		Exclude:         []string{"oc"},
 	})
@@ -85,9 +48,6 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	if strings.Contains(strings.Join(plan.Args, " "), ":/out") {
 		t.Error("the output directory must not be bind mounted")
 	}
-	if plan.Output != filepath.Join(outDir, "myapp.tar.gz") {
-		t.Errorf("output = %q", plan.Output)
-	}
 	if plan.Engine != "podman" {
 		t.Errorf("engine = %q, want podman", plan.Engine)
 	}
@@ -95,7 +55,6 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	for _, want := range []string{
 		"--platform linux/amd64",
 		"--rm",
-		bin + ":/usr/local/bin/mpack:ro",
 		filepath.Join(project, "mise.toml") + ":/host/mise-config/0:ro", // read only
 		global + ":/host/global-config:ro",
 		DefaultCrossImage,
@@ -105,8 +64,9 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 		}
 	}
 
-	// The tools must be installed in the container, not copied from the host.
-	for _, want := range []string{"mise install", "mpack pack", "--exclude oc", "-o /tmp/mpack-archive.tar.gz", "cat /tmp/mpack-archive.tar.gz"} {
+	// The tools must be installed in the container, not copied from the host,
+	// and the container streams a payload rather than running mpack.
+	for _, want := range []string{"mise install", "mise ls --current --json", "mise bin-paths", "gzip"} {
 		if !strings.Contains(plan.Script, want) {
 			t.Errorf("script missing %q:\n%s", want, plan.Script)
 		}
@@ -132,15 +92,10 @@ func TestBuildCrossPlanWithoutGlobalConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-arm64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	plan, err := BuildCrossPlan(CrossOptions{
 		Target:          "linux/arm64",
 		ProjectDir:      project,
 		GlobalConfigDir: filepath.Join(home, "does-not-exist"),
-		MpackBin:        bin,
 		Output:          filepath.Join(t.TempDir(), "out.tar.gz"),
 	})
 	if err != nil {
@@ -174,12 +129,8 @@ func TestCrossPackCarriesAncestorConfigs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "mise.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	plan, err := BuildCrossPlan(CrossOptions{
-		Target: "linux/amd64", ProjectDir: project, MpackBin: bin,
+		Target: "linux/amd64", ProjectDir: project,
 		Output: filepath.Join(t.TempDir(), "o.tar.gz"),
 	})
 	if err != nil {
@@ -209,12 +160,8 @@ func TestCrossPackFailsWithoutAnyMiseConfig(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	_, err := BuildCrossPlan(CrossOptions{
-		Target: "linux/amd64", ProjectDir: project, MpackBin: bin,
+		Target: "linux/amd64", ProjectDir: project,
 		Output: filepath.Join(t.TempDir(), "o.tar.gz"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "no mise configuration") {
@@ -242,13 +189,9 @@ func TestCrossPackCarriesAncestorConfigsOutsideHome(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "mise.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	plan, err := BuildCrossPlan(CrossOptions{
-		Target: "linux/amd64", ProjectDir: project, MpackBin: bin,
+		Target: "linux/amd64", ProjectDir: project,
 		Output: filepath.Join(t.TempDir(), "o.tar.gz"),
 	})
 	if err != nil {
@@ -288,13 +231,9 @@ func TestCrossPackAcceptsGlobalOnlyProject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(global, "config.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(home, "mpack-linux-amd64")
-	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	plan, err := BuildCrossPlan(CrossOptions{
-		Target: "linux/amd64", ProjectDir: project, MpackBin: bin,
+		Target: "linux/amd64", ProjectDir: project,
 		GlobalConfigDir: global,
 		Output:          filepath.Join(t.TempDir(), "o.tar.gz"),
 	})
@@ -303,5 +242,33 @@ func TestCrossPackAcceptsGlobalOnlyProject(t *testing.T) {
 	}
 	if !strings.Contains(plan.Script, "cp -R /host/global-config/.") {
 		t.Errorf("the global config is not copied in:\n%s", plan.Script)
+	}
+}
+
+// The error raised when the container engine is missing must not suggest
+// --print-command as a way to pack anyway: that flag prints the
+// tool-installation step, which streams a payload for inspection and cannot
+// produce an archive on its own.
+func TestMissingEngineErrorDoesNotPromisePrintCommandPacks(t *testing.T) {
+	plan := &CrossPlan{Engine: "definitely-not-installed-engine", Output: filepath.Join(t.TempDir(), "o.tar.gz")}
+	err := RunCross(plan, filepath.Join(t.TempDir(), "payload.tar.gz"), nil)
+	if err == nil {
+		t.Fatal("a missing engine should be reported")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, plan.Engine) {
+		t.Errorf("the error should name the engine: %v", err)
+	}
+	for _, misleading := range []string{
+		"run the container yourself",
+		"--print-command to run",
+	} {
+		if strings.Contains(msg, misleading) {
+			t.Errorf("the error implies --print-command can pack (%q): %v", misleading, err)
+		}
+	}
+	// If it mentions the flag at all, it has to say what the flag really does.
+	if strings.Contains(msg, "--print-command") && !strings.Contains(msg, "payload") {
+		t.Errorf("--print-command is mentioned without saying it only yields a payload: %v", err)
 	}
 }
