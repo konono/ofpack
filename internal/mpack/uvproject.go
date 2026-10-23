@@ -163,11 +163,12 @@ func ReadUVProject(dir string) (*UVSource, error) {
 	return s, nil
 }
 
-// ProjectMisePython reads [tools].python only from the project's own
-// mise.toml. A parent project's Python selection must not silently become
-// this project's selection. read reports whether the file was opened.
+// ProjectMisePython reads the Python selector from the project's own mise
+// configuration. A parent project's selection must not silently become this
+// project's. read reports whether any config file was opened.
 func ProjectMisePython(dir string) (selector string, read bool, err error) {
-	return misePythonFromFile(filepath.Join(dir, "mise.toml"))
+	selector, _, read, err = misePythonFromDir(dir)
+	return selector, read, err
 }
 
 // ScopedMisePython merges only Python selectors along root..project. The
@@ -186,8 +187,7 @@ func ScopedMisePython(root, project string) (selector, source string, read bool,
 		return "", "", false, fmt.Errorf("project %s is outside pack root %s", project, root)
 	}
 	for dir := root; ; {
-		file := filepath.Join(dir, "mise.toml")
-		value, opened, readErr := misePythonFromFile(file)
+		value, file, opened, readErr := misePythonFromDir(dir)
 		if readErr != nil {
 			return "", "", read, readErr
 		}
@@ -213,38 +213,84 @@ func ScopedMisePython(root, project string) (selector, source string, read bool,
 // An explicit global-config file takes precedence over MISE_CONFIG_DIR.
 func GlobalMisePython() (selector, source string, err error) {
 	if path := os.Getenv("MISE_GLOBAL_CONFIG_FILE"); path != "" {
-		selector, _, err = misePythonFromFile(path)
+		data, readErr := os.ReadFile(path)
+		if os.IsNotExist(readErr) {
+			return "", "", nil
+		}
+		if readErr != nil {
+			return "", "", fmt.Errorf("reading %s: %w", path, readErr)
+		}
+		selector, err = tomlConfigPython(path, data)
 		return selector, path, err
 	}
 	dir := DefaultGlobalConfigDir()
 	for _, name := range []string{"config.toml", "mise.toml"} {
 		path := filepath.Join(dir, name)
-		value, read, readErr := misePythonFromFile(path)
-		if readErr != nil {
-			return "", "", readErr
+		data, readErr := os.ReadFile(path)
+		if os.IsNotExist(readErr) {
+			continue
 		}
-		if read && value != "" {
+		if readErr != nil {
+			return "", "", fmt.Errorf("reading %s: %w", path, readErr)
+		}
+		value, convErr := tomlConfigPython(path, data)
+		if convErr != nil {
+			return "", "", convErr
+		}
+		if value != "" {
 			return value, path, nil
 		}
 	}
 	return "", "", nil
 }
 
-func misePythonFromFile(path string) (selector string, read bool, err error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", false, nil
+// misePythonFromDir returns the Python selector the directory's mise
+// configuration asks for, reading the same files mise does, in the order
+// mise resolves them.
+//
+// A file that declares no Python is not an answer, so the next file down is
+// tried - that is what mise does too. But a file that *does* declare one
+// which cannot be interpreted is an error: falling through would quietly
+// build on a different Python than the directory asks for, and the mismatch
+// would only surface on the disconnected machine.
+func misePythonFromDir(dir string) (selector, source string, read bool, err error) {
+	for _, name := range miseConfigPrecedence {
+		file := filepath.Join(dir, filepath.FromSlash(name))
+		data, readErr := os.ReadFile(file)
+		if os.IsNotExist(readErr) {
+			continue
+		}
+		if readErr != nil {
+			return "", "", read, fmt.Errorf("reading %s: %w", file, readErr)
+		}
+		read = true
+		var value string
+		if name == ".tool-versions" {
+			// Not TOML: a plain "<tool> <version>" list, so it gets its own
+			// reader rather than being fed to the TOML one.
+			value, err = toolVersionsPython(file, data)
+		} else {
+			value, err = tomlConfigPython(file, data)
+		}
+		if err != nil {
+			return "", "", read, err
+		}
+		if value != "" {
+			return value, file, read, nil
+		}
 	}
-	if err != nil {
-		return "", false, fmt.Errorf("reading %s: %w", path, err)
-	}
+	return "", "", read, nil
+}
+
+// tomlConfigPython reads [tools].python out of a mise TOML config.
+func tomlConfigPython(file string, data []byte) (string, error) {
 	body, ok := tomlTableBody(string(data), "tools")
 	if !ok {
-		return "", true, nil
+		return "", nil
 	}
 	idx := findKey(body, "python")
 	if idx < 0 {
-		return "", true, nil
+		return "", nil
 	}
 	line := body[idx:]
 	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
@@ -252,20 +298,65 @@ func misePythonFromFile(path string) (selector string, read bool, err error) {
 	}
 	_, raw, ok := strings.Cut(line, "=")
 	if !ok {
-		return "", true, fmt.Errorf("project mise.toml [tools].python is invalid; use --python X.Y to select Python explicitly")
+		return "", unreadablePython(file, "it is not a key = value assignment")
 	}
 	raw = strings.TrimSpace(raw)
 	if i := strings.Index(raw, " #"); i >= 0 {
 		raw = strings.TrimSpace(raw[:i])
 	}
+	switch {
+	case raw == "":
+		return "", unreadablePython(file, "it has no value")
+	case strings.HasPrefix(raw, "["):
+		// Several versions at once: mpack builds one environment, so which
+		// was meant is genuinely ambiguous.
+		return "", unreadablePython(file, "it lists several versions")
+	case strings.HasPrefix(raw, "{"):
+		return "", unreadablePython(file, "it uses the table form")
+	}
 	if len(raw) < 3 || !(raw[0] == '"' && raw[len(raw)-1] == '"' || raw[0] == '\'' && raw[len(raw)-1] == '\'') {
-		return "", true, fmt.Errorf("project mise.toml [tools].python is not a single quoted version such as \"3.12\" or \"latest\"; use --python X.Y")
+		return "", unreadablePython(file, `it is not a single quoted version such as "3.12" or "latest"`)
 	}
-	selector = unquoteTOML(raw)
+	selector := unquoteTOML(raw)
 	if selector == "" {
-		return "", true, fmt.Errorf("project mise.toml [tools].python is empty; use --python X.Y")
+		return "", unreadablePython(file, "it is empty")
 	}
-	return selector, true, nil
+	return selector, nil
+}
+
+// toolVersionsPython reads a python entry out of a .tool-versions file.
+func toolVersionsPython(file string, data []byte) (string, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 || normalizeDist(fields[0]) != "python" {
+			continue
+		}
+		switch {
+		case len(fields) == 1:
+			return "", unreadablePython(file, "the python entry names no version")
+		case len(fields) > 2:
+			return "", unreadablePython(file, "the python entry lists several versions")
+		}
+		return fields[1], nil
+	}
+	return "", nil
+}
+
+// PythonSelectorLabel names the thing that was read, so a .tool-versions
+// file is not reported as a [tools] table it does not have.
+func PythonSelectorLabel(file string) string {
+	if filepath.Base(file) == ".tool-versions" {
+		return "python entry"
+	}
+	return "[tools].python"
+}
+
+func unreadablePython(file, why string) error {
+	return fmt.Errorf("%s selects a Python that mpack cannot interpret: %s.\nIt is not ignored, because that would silently build the environment on a different Python than this directory asks for. Use --python X.Y to choose one explicitly", file, why)
 }
 
 // MissingFromRequirementsTxt reports dependencies that pyproject declares but
@@ -410,8 +501,11 @@ func tomlStringArray(doc, table, key string) ([]string, bool) {
 		return nil, false
 	}
 	rest := strings.TrimSpace(body[idx:])
-	rest = strings.TrimSpace(strings.TrimPrefix(rest, key))
-	rest = strings.TrimSpace(strings.TrimPrefix(rest, "="))
+	// The key may be quoted, so cut at the assignment rather than trimming a
+	// bare name off the front.
+	if _, after, ok := strings.Cut(rest, "="); ok {
+		rest = strings.TrimSpace(after)
+	}
 	if !strings.HasPrefix(rest, "[") {
 		return nil, false
 	}
@@ -500,13 +594,20 @@ func tomlTableBody(doc, table string) (string, bool) {
 
 // findKey locates a top-level key assignment in a table body.
 func findKey(body, key string) int {
+	// TOML allows a bare key or a quoted one, and mise honours both. mpack
+	// writes the quoted form itself, so matching only the bare one meant it
+	// could not read back configuration in its own style.
+	forms := []string{key, `"` + key + `"`, "'" + key + "'"}
 	offset := 0
 	for _, line := range strings.Split(body, "\n") {
 		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, key) {
-			rest := strings.TrimSpace(strings.TrimPrefix(t, key))
+		for _, form := range forms {
+			if !strings.HasPrefix(t, form) {
+				continue
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(t, form))
 			if strings.HasPrefix(rest, "=") {
-				return offset + strings.Index(line, key)
+				return offset + strings.Index(line, form)
 			}
 		}
 		offset += len(line) + 1

@@ -174,6 +174,42 @@ var miseConfigFiles = []string{
 	".config/mise.toml", ".config/mise/config.toml",
 }
 
+// miseConfigPrecedence is miseConfigFiles ordered the way mise resolves them
+// within one directory, highest priority first. Measured with
+// `mise config ls` rather than assumed: reading them in the wrong order
+// would pick a version the directory does not actually use.
+//
+// .tool-versions is last and is not TOML; it needs its own reader.
+var miseConfigPrecedence = []string{
+	".mise.local.toml",
+	"mise.local.toml",
+	".mise.toml",
+	"mise.toml",
+	"mise/config.toml",
+	".mise/config.toml",
+	".config/mise.toml",
+	".config/mise/config.toml",
+	".tool-versions",
+}
+
+// init keeps the two lists in step. A config file mpack copies into the
+// container but never consults when choosing Python would be a silent gap,
+// which is the defect this ordering was added to close.
+func init() {
+	if len(miseConfigPrecedence) != len(miseConfigFiles) {
+		panic("miseConfigPrecedence and miseConfigFiles disagree on how many config files mise reads")
+	}
+	known := make(map[string]bool, len(miseConfigFiles))
+	for _, name := range miseConfigFiles {
+		known[name] = true
+	}
+	for _, name := range miseConfigPrecedence {
+		if !known[name] {
+			panic("miseConfigPrecedence lists " + name + ", which is not in miseConfigFiles")
+		}
+	}
+}
+
 // BuildCrossPlan assembles the container invocation without running anything,
 // so it can be printed and reviewed.
 func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {

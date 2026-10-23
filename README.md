@@ -531,11 +531,21 @@ environment there, offline.
 In `--uv-project` mode, the Python selector comes from, in order:
 
 1. `--python X.Y`, when given;
-2. `[tools].python` in `mise.toml` along the path from the selected root to
-   the directory containing `pyproject.toml`; a nearer file wins. Files above
-   the selected root and in unrelated siblings are ignored. If it says
-   `latest` and `requires-python` has a lower bound, mpack chooses that
-   lowest allowed minor;
+2. `[tools].python` in the mise configuration along the path from the
+   selected root to the directory containing `pyproject.toml`; a nearer
+   directory wins. Every file mise reads is considered — `mise.toml`,
+   `.mise.toml`, the `.local` variants, `mise/config.toml`,
+   `.config/mise.toml` and `.tool-versions` — in the order mise itself
+   resolves them, and a quoted `"python"` key is read like a bare one.
+   Files above the selected root and in unrelated siblings are ignored. If
+   it says `latest` and `requires-python` has a lower bound, mpack chooses
+   that lowest allowed minor.
+
+   A configuration that names a Python mpack cannot interpret — several
+   versions at once, the table form, or an empty value — stops the pack
+   rather than falling through to the next source. Choosing a different
+   interpreter than the directory asks for would only become apparent on the
+   disconnected machine;
 3. the lower bound of `pyproject.toml`'s `requires-python`;
 4. global mise Python, only when the project supplies neither a scoped
    selector nor a Python lower bound.
