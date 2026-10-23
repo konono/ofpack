@@ -51,6 +51,10 @@ type Plan struct {
 	payloadPath string
 	// byName indexes the payload entries that survived classification.
 	byName map[string]entry
+	// stageRoot and staged carry files produced outside the mise install
+	// tree, such as a fetched package set.
+	stageRoot string
+	staged    []entry
 	// unpacker, when set, is an ofpack binary that runs on the target; it is
 	// archived as bin/ofpack so the target needs nothing but tar to bootstrap.
 	unpacker []byte
@@ -582,21 +586,30 @@ func (p *Plan) Write(w io.Writer) error {
 			return err
 		}
 	}
-	rootTools := p.Manifest.Tools
-	if len(p.Manifest.Scopes) > 0 {
-		rootTools = p.Manifest.Scopes[0].Tools
-	}
-	if err := writeBytes(tw, ConfigName, 0o644, RenderConfig(rootTools), now); err != nil {
-		return err
+	// A package-only archive has no tools to pin, and unpack installs no
+	// config for it; writing an empty one would imply a toolchain is there.
+	if p.Manifest.CarriesMise() {
+		rootTools := p.Manifest.Tools
+		if len(p.Manifest.Scopes) > 0 {
+			rootTools = p.Manifest.Scopes[0].Tools
+		}
+		if err := writeBytes(tw, ConfigName, 0o644, RenderConfig(rootTools), now); err != nil {
+			return err
+		}
 	}
 
+	for _, e := range p.staged {
+		if err := writeEntry(tw, e); err != nil {
+			return fmt.Errorf("%s: %w", e.src, err)
+		}
+	}
 	if p.payloadPath != "" {
 		// The files came from a container; stream them straight through,
 		// using the headers classification already approved.
 		if err := copyPayloadBodies(p.payloadPath, p.byName, tw); err != nil {
 			return err
 		}
-	} else {
+	} else if p.Manifest.CarriesMise() {
 		miseBin, err := os.ReadFile(p.Env.Bin)
 		if err != nil {
 			return err
@@ -726,4 +739,102 @@ func logf(w io.Writer, format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(w, format, args...)
+}
+
+// PackagesOnlyOptions describes an archive that carries operating system
+// packages and no toolchain.
+type PackagesOnlyOptions struct {
+	WorkDir  string
+	StageDir string
+	Packages *Packages
+	// Target is the "<os>/<arch>" the packages are for. Empty means this
+	// machine.
+	Target  string
+	Version string
+	Log     io.Writer
+}
+
+// BuildPackagesOnlyPlan assembles an archive holding nothing but operating
+// system packages. There is no mise here: no binary, no tool tree, no
+// generated config, and unpack will not write an activate.sh for a toolchain
+// that does not exist.
+func BuildPackagesOnlyPlan(opts PackagesOnlyOptions) (*Plan, error) {
+	if opts.Packages == nil {
+		return nil, fmt.Errorf("no packages to pack")
+	}
+	workDir, err := filepath.Abs(opts.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	goos, goarch := runtime.GOOS, runtime.GOARCH
+	if opts.Target != "" && opts.Target != HostTarget() {
+		var err error
+		goos, goarch, err = ResolveTarget(opts.Target)
+		if err != nil {
+			return nil, err
+		}
+	}
+	p := &Plan{
+		stageRoot: opts.StageDir,
+		Manifest: Manifest{
+			Schema:                  SchemaVersionPackages,
+			OfpackVersion:           opts.Version,
+			CreatedAt:               time.Now().UTC().Format(time.RFC3339),
+			OS:                      goos,
+			Arch:                    goarch,
+			Packages:                opts.Packages,
+			HomeRelativeProjectPath: relToHome(workDir),
+		},
+	}
+	if err := p.scanStagedPackages(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// scanStagedPackages records the package files the fetch produced so Write
+// can copy them into the archive.
+func (p *Plan) scanStagedPackages() error {
+	dir := filepath.Join(p.stageRoot, PackagesPrefix)
+	return filepath.WalkDir(dir, func(src string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, ok := RelUnder(p.stageRoot, src)
+		if !ok {
+			return fmt.Errorf("%s is outside the staging directory", src)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			p.Manifest.Stats.Dirs++
+		} else if info.Mode().IsRegular() {
+			p.Manifest.Stats.Files++
+			p.Manifest.Stats.Bytes += info.Size()
+		} else {
+			return fmt.Errorf("%s: only regular files belong in a package set", src)
+		}
+		p.staged = append(p.staged, entry{name: rel, src: src, info: info})
+		return nil
+	})
+}
+
+// AttachPackages adds a fetched package set to a plan built by any of the
+// other paths, so one archive can carry a toolchain and the operating system
+// packages that go with it.
+func (p *Plan) AttachPackages(stageDir string, pkgs *Packages) error {
+	if pkgs == nil {
+		return nil
+	}
+	p.stageRoot = stageDir
+	if err := p.scanStagedPackages(); err != nil {
+		return err
+	}
+	p.Manifest.Packages = pkgs
+	// Carrying packages is a layout an older ofpack does not know; it would
+	// drop packages/ and report success.
+	p.Manifest.Schema = SchemaVersionPackages
+	return nil
 }

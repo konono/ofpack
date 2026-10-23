@@ -131,7 +131,7 @@ func ReadManifest(r io.Reader) (*Manifest, error) {
 }
 
 // supportedSchemas are the archive layouts this ofpack can unpack in full.
-var supportedSchemas = []int{SchemaVersion, SchemaVersionUV, SchemaVersionScoped}
+var supportedSchemas = []int{SchemaVersion, SchemaVersionUV, SchemaVersionScoped, SchemaVersionPackages}
 
 func checkSchema(schema int) error {
 	for _, s := range supportedSchemas {
@@ -171,9 +171,15 @@ func CheckPlatform(m *Manifest) error {
 }
 
 func unitsFor(m *Manifest) []unit {
-	units := []unit{
-		{archivePrefix: MiseBinName, destRel: filepath.FromSlash(MiseBinName), isFile: true},
-		{archivePrefix: ConfigName, destRel: filepath.FromSlash(ConfigName), isFile: true},
+	var units []unit
+	// An archive may carry only operating system packages. There is no mise
+	// in it then, and inventing an activate.sh or a config that point at a
+	// binary the archive does not have would be worse than their absence.
+	if m.CarriesMise() {
+		units = append(units,
+			unit{archivePrefix: MiseBinName, destRel: filepath.FromSlash(MiseBinName), isFile: true},
+			unit{archivePrefix: ConfigName, destRel: filepath.FromSlash(ConfigName), isFile: true},
+		)
 	}
 	if m.HasUnpacker {
 		units = append(units, unit{archivePrefix: UnpackerName, destRel: filepath.FromSlash(UnpackerName), isFile: true})
@@ -191,11 +197,19 @@ func unitsFor(m *Manifest) []unit {
 		// is rebuilt from.
 		units = append(units, unit{archivePrefix: UVPrefix, destRel: UVPrefix})
 	}
+	if m.Packages != nil {
+		units = append(units, unit{archivePrefix: PackagesPrefix, destRel: PackagesPrefix})
+	}
 	// The generated sidecars are units too: they must respect the overwrite
-	// policy and go through the same transaction, never a blind write.
+	// policy and go through the same transaction, never a blind write. The
+	// shell ones only make sense when there is a toolchain to activate.
+	if m.CarriesMise() {
+		units = append(units,
+			unit{archivePrefix: ActivateName, destRel: ActivateName, isFile: true, generated: true},
+			unit{archivePrefix: DirenvName, destRel: DirenvName, isFile: true, generated: true},
+		)
+	}
 	units = append(units,
-		unit{archivePrefix: ActivateName, destRel: ActivateName, isFile: true, generated: true},
-		unit{archivePrefix: DirenvName, destRel: DirenvName, isFile: true, generated: true},
 		unit{archivePrefix: InstalledManifestName, destRel: InstalledManifestName, isFile: true, generated: true},
 	)
 	for _, scope := range m.Scopes {
@@ -216,14 +230,18 @@ func scopeDirenvName(rel string) string { return path.Join("config", "scopes", r
 // validateScopedManifest runs before destination creation. Scope paths and
 // references are untrusted archive input and become generated file paths.
 func validateScopedManifest(m *Manifest) error {
-	if m.Schema != SchemaVersionScoped {
-		if len(m.Scopes) != 0 {
-			return fmt.Errorf("archive schema %d cannot contain scoped tool selections", m.Schema)
-		}
+	// Scopes arrived in SchemaVersionScoped and are carried by every layout
+	// since, so the test is "at least that", not an exact match: an exact
+	// one would skip validation entirely on a later layout.
+	// Scopes are optional. A uv archive carries tools and no scopes, and a
+	// package-only archive carries neither, so the schema number cannot
+	// stand in for "this archive describes scopes" - only their presence
+	// can. Everything below validates the scopes that are actually here.
+	if len(m.Scopes) == 0 {
 		return nil
 	}
-	if len(m.Scopes) == 0 {
-		return errors.New("scoped archive has no root scope")
+	if m.Schema < SchemaVersionScoped {
+		return fmt.Errorf("archive schema %d cannot contain scoped tool selections", m.Schema)
 	}
 	known := map[string]bool{}
 	installPaths := map[string]bool{}
@@ -288,8 +306,20 @@ func stageSidecars(staging, dest string, m *Manifest) error {
 		mode os.FileMode
 	}{
 		{InstalledManifestName, append(data, '\n'), 0o644},
-		{ActivateName, []byte(ActivateScript(dest)), 0o755},
-		{DirenvName, []byte(DirenvScript(dest)), 0o644},
+	}
+	if m.CarriesMise() {
+		files = append(files,
+			struct {
+				name string
+				body []byte
+				mode os.FileMode
+			}{ActivateName, []byte(ActivateScript(dest)), 0o755},
+			struct {
+				name string
+				body []byte
+				mode os.FileMode
+			}{DirenvName, []byte(DirenvScript(dest)), 0o644},
+		)
 	}
 	for _, f := range files {
 		full, err := ResolveUnder(staging, f.name)

@@ -121,3 +121,35 @@ func TestDiscoverMiseScopesSkipsGeneratedTrees(t *testing.T) {
 		t.Fatalf("unexpected scopes: %v", scopes)
 	}
 }
+
+// Without mise there are no tools to pack - unless the tree asks for some,
+// in which case packing it as "no toolchain" would drop them silently.
+func TestAnyScopeHasToolsNeedsMiseWhenTheTreeAsksForIt(t *testing.T) {
+	t.Setenv("OFPACK_MISE_BIN", filepath.Join(t.TempDir(), "no-such-mise"))
+
+	bare := t.TempDir()
+	has, err := AnyScopeHasTools(bare)
+	if err != nil || has {
+		t.Fatalf("a tree with no mise config and no mise should simply have no tools: %v %v", has, err)
+	}
+
+	withConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withConfig, "mise.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AnyScopeHasTools(withConfig); err == nil {
+		t.Fatal("a mise config with no mise available must be reported, not treated as no tools")
+	}
+
+	child := t.TempDir()
+	sub := filepath.Join(child, "app")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "mise.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AnyScopeHasTools(child); err == nil {
+		t.Fatal("a child scope's config must be noticed too")
+	}
+}

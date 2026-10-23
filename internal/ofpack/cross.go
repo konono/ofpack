@@ -285,7 +285,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 		return nil, fmt.Errorf("no mise configuration found within %s or in the global config dir", project)
 	}
 	for _, c := range configs {
-		args = append(args, "-v", c.Host+":"+c.MountPath+":ro")
+		args = append(args, "-v", c.Host+":"+c.MountPath+":ro,z")
 	}
 	// A uv pack writes its own mise configuration inside the container,
 	// listing only Python and uv, so nothing of this machine's setup - and

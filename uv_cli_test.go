@@ -179,7 +179,7 @@ func TestLatestMisePythonFailureSuggestsAPinAndKeepsExistingOutput(t *testing.T)
 	if err := os.WriteFile(output, []byte("previous archive"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := uvPack("linux/amd64", output, dir, "", "", "", engine, "", false, false, false)
+	err := uvPack("linux/amd64", output, dir, "", "", "", engine, "", packageOptions{}, false, false, false)
 	if err == nil || !strings.Contains(err.Error(), "--python X.Y") || !strings.Contains(err.Error(), "was not replaced") {
 		t.Fatalf("latest failure should suggest a pin and account for the old archive: %v", err)
 	}

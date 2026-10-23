@@ -607,7 +607,7 @@ func TestLegacyMpackArchivesAreRefusedWithAnExplanation(t *testing.T) {
 		}
 	}
 	// And an unknown future layout is still refused.
-	if err := checkSchema(SchemaVersionScoped + 1); err == nil {
+	if err := checkSchema(unsupportedSchema()); err == nil {
 		t.Error("an unknown schema should be refused")
 	}
 }
@@ -635,4 +635,17 @@ func TestLegacyArchiveWritesNothing(t *testing.T) {
 	if _, err := ReadManifest(bytes.NewReader(buf.Bytes())); err == nil {
 		t.Fatal("inspect accepted a legacy archive")
 	}
+}
+
+// unsupportedSchema is one past the newest layout this ofpack understands.
+// Written as a literal it silently became a supported value the next time a
+// schema was added, and the test stopped testing anything.
+func unsupportedSchema() int {
+	highest := 0
+	for _, s := range supportedSchemas {
+		if s > highest {
+			highest = s
+		}
+	}
+	return highest + 1
 }

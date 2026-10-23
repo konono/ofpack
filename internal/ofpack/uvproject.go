@@ -1340,7 +1340,10 @@ func VerifyUVPayloadOffline(payloadPath, engine, image, target string, logs io.W
 	cmd := exec.Command(engine, "run", "--rm", "-i",
 		"--network", "none", // the whole point of the check
 		"--platform", target,
-		"-v", payloadPath+":/payload.tar.gz:ro",
+		// :z labels the mount for SELinux. Without it this is unreadable
+		// from inside the container on a RHEL host, which is exactly where
+		// a pack that also fetches RPMs has to run.
+		"-v", payloadPath+":/payload.tar.gz:ro,z",
 		image, "sh", "-euc", script)
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Run(); err != nil {

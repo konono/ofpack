@@ -16,7 +16,7 @@ import (
 // goes into the archive - a .venv holds host-native binaries and absolute
 // paths, and would not work on the other side even if it were copied.
 func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine, ofpackBin string,
-	noUnpacker, printOnly, dryRun bool) error {
+	pkgOpts packageOptions, noUnpacker, printOnly, dryRun bool) error {
 
 	packRoot, err := filepath.Abs(projectDir)
 	if err != nil {
@@ -172,6 +172,11 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	}
 	uvRecord.VerifiedOffline = how
 
+	cleanupPkgs, err := attachPackagesTo(packPlan, projectDir, pkgOpts)
+	if err != nil {
+		return err
+	}
+	defer cleanupPkgs()
 	if err := attachUnpacker(packPlan, target, ofpackBin, builderImage, engine, noUnpacker); err != nil {
 		return err
 	}

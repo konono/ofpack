@@ -52,6 +52,11 @@ const (
 	// layout.
 	SchemaVersionScoped = 6
 
+	// SchemaVersionPackages is declared by archives that also carry
+	// operating system packages. An ofpack that predates them would drop
+	// the packages/ directory and report success.
+	SchemaVersionPackages = 7
+
 	// legacyMaxSchema is the highest schema mpack ever wrote. Archives at or
 	// below it get an explanation rather than a bare "unsupported".
 	legacyMaxSchema = 3
@@ -109,6 +114,11 @@ type Manifest struct {
 	// rebuild, rather than only mise tools.
 	UVProject *UVProject `json:"uv_project,omitempty"`
 
+	// Packages is present when the archive carries operating system
+	// packages. Unpack only puts them on disk; installing them is a
+	// separate, explicit command.
+	Packages *Packages `json:"packages,omitempty"`
+
 	Stats Stats `json:"stats"`
 }
 
@@ -164,3 +174,8 @@ type Stats struct {
 	Symlinks int   `json:"symlinks"`
 	Bytes    int64 `json:"bytes"`
 }
+
+// CarriesMise reports whether the archive holds a mise toolchain. An archive
+// may carry only operating system packages, in which case there is no mise
+// binary, no tool tree, and nothing for activate.sh to activate.
+func (m *Manifest) CarriesMise() bool { return len(m.Tools) > 0 }

@@ -731,6 +731,114 @@ carries the Python interpreter, uv, the wheel closure and the project's
 `.venv`; collections are a separate concern and are not packed, restored or
 checked.
 
+## Carrying operating system packages
+
+A toolchain is not always the whole story: a disconnected machine may also
+need RPMs or .debs. With `--packages`, ofpack reads a `packages.txt` beside
+the project, resolves the dependency closure where the repositories can be
+reached, and carries the package files along.
+
+```sh
+cat packages.txt
+# one package name per line; blank lines and # comments are ignored
+jq
+```
+
+`packages.txt` is **only read when `--packages` is given**, so a project can
+keep one without every pack picking it up. It holds package names and
+nothing else — a version, a path or anything resembling an option is refused
+with the line number, because these names are handed to a package manager
+running as root.
+
+### Fetching
+
+RPMs are resolved on a machine of the target distribution, since that is
+where the repositories and the entitlement are:
+
+```sh
+ofpack pack --packages \
+  --package-repo rhel-10-for-x86_64-baseos-rpms \
+  --package-repo rhel-10-for-x86_64-appstream-rpms \
+  -o tools.tar.gz
+```
+
+`--package-repo` is **required** and repeatable. ofpack will not fetch from
+"whatever is enabled": a broken or unexpected third-party repository should
+not be able to fail the pack or supply a package. If one is named that it
+cannot use, the error says which, and ofpack never imports a signing key on
+its own.
+
+.debs are resolved in a container of the target distribution, so
+`--package-base` is required and names the image. `--target` is required
+with it: the image says where the closure is resolved, not which
+architecture it is for, and without it an archive packed on a Mac would
+describe darwin and carry a macOS unpacker.
+
+```sh
+ofpack pack --packages --target linux/amd64 \
+  --package-base docker.io/library/debian:bookworm-slim -o tools.tar.gz
+
+ofpack pack --packages --target linux/amd64 \
+  --package-base docker.io/library/ubuntu:24.04 -o tools.tar.gz
+```
+
+RPMs are the other way round: `dnf` resolves against this machine's own
+repositories and downloads for its own architecture, so a native fetch
+refuses a `--target` that is not this platform rather than mixing
+architectures into one archive.
+
+A project with a `packages.txt` and no mise tools produces a **package-only
+archive**: no mise binary, no tool tree, and no `activate.sh`, because there
+would be nothing for it to activate. Otherwise the packages travel in the
+same archive as the toolchain.
+
+### Installing
+
+Unpack puts the package files on disk and stops. Installing them changes the
+whole machine, so it is a separate command and never happens on its own:
+
+```sh
+ofpack unpack -f tools.tar.gz --dest ~/tools
+sudo ofpack packages install --dest ~/tools
+```
+
+Four things happen before anything is installed:
+
+* the running system's `/etc/os-release` must match the one the closure was
+  resolved for, **including the minor version** — RHEL 10.2 and 10.3 ship
+  different builds, so a closure for one is not a closure for the other.
+  `--no-os-check` overrides it deliberately;
+* every package file is checked against the digest in the manifest, and a
+  file the manifest does not list stops the install too. An archive is
+  untrusted input and a package is executable content;
+* the package manager runs with its repositories disabled — `dnf
+  --disablerepo '*' --cacheonly`, and for apt an empty source list — so it
+  cannot reach out, whether or not the machine is actually disconnected;
+* root is required, and ofpack does not escalate by itself. It tells you to
+  re-run it under `sudo` rather than doing it for you.
+
+Package names reach the manager as arguments, never as part of a shell
+command, and the container that resolves .debs reads them from a mounted
+file rather than having them baked into its script.
+
+### What the closure covers
+
+| manager | how it is resolved | what that means |
+| --- | --- | --- |
+| dnf | `dnf download --resolve --alldeps` | the whole closure, including packages the target probably already has |
+| apt | `apt-get --download-only` with an empty dpkg status | the declared dependency closure of the named packages |
+
+The apt figure deserves the detail. Left to itself, apt downloads only what
+the machine it runs on is missing, which would leave a target with a
+different base short of exactly the packages the builder happened to have.
+Emptying the package status makes it plan as though nothing were installed.
+What it still omits are `Essential: yes` packages, which apt treats as always
+present — the manifest records that, so the guarantee is written down rather
+than assumed.
+
+Ansible Galaxy collections, language package managers and anything else
+outside RPM and .deb are not in scope here.
+
 ## Known limits
 
 * **Absolute paths baked into file contents are not rewritten.** ofpack fixes

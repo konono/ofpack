@@ -718,7 +718,7 @@ func TestUVArchiveDeclaresANewerSchema(t *testing.T) {
 		t.Errorf("schema %d should still be readable: %v", SchemaVersion, err)
 	}
 	// A future layout is refused rather than partially unpacked.
-	err = checkSchema(SchemaVersionScoped + 1)
+	err = checkSchema(unsupportedSchema())
 	if err == nil || !strings.Contains(err.Error(), "silently leave parts out") {
 		t.Errorf("an unknown schema should be refused with an explanation, got %v", err)
 	}

@@ -24,6 +24,7 @@ Usage:
   ofpack inspect -f ARCHIVE         Show what an archive contains
   ofpack env     --dest DIR         Print the shell setup for an unpacked tree
   ofpack direnv  init [flags]       Hook a directory up to its packed mise scope
+  ofpack packages install          Install an archive's OS packages (explicit, never automatic)
   ofpack uv      restore            Build a packed Python project's .venv, offline
   ofpack version
 
@@ -95,6 +96,8 @@ func main() {
 		err = cmdDirenv(os.Args[2:])
 	case "uv":
 		err = cmdUV(os.Args[2:])
+	case "packages":
+		err = cmdPackages(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("ofpack", version)
 	case "help", "-h", "--help":
@@ -142,6 +145,10 @@ Flags:
 	engine := fs.String("engine", "podman", "container engine for --target")
 	ofpackBin := fs.String("ofpack-bin", "", "use this prebuilt ofpack as the bundled unpacker instead of building one")
 	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+ofpack.UnpackerName+"; the target will need its own ofpack")
+	packages := fs.Bool("packages", false, "also carry the operating system packages listed in "+ofpack.PackagesListName+" (read only when this flag is given)")
+	var packageRepos packageRepoList
+	fs.Var(&packageRepos, "package-repo", "repository id to resolve packages from, repeatable; required for dnf so the fetch cannot use whatever happens to be enabled")
+	packageBase := fs.String("package-base", "", "container image to resolve apt packages in; needs --target, for example --target linux/amd64 --package-base docker.io/library/debian:bookworm-slim (or docker.io/library/ubuntu:24.04)")
 	uvProject := fs.Bool("uv-project", false, "pack a uv Python project: the target's Python, uv and a wheel closure, instead of this machine's mise tools")
 	pythonSpec := fs.String("python", "", "Python X.Y for --uv-project (overrides the project's own mise.toml; latest there uses the requires-python lower bound when present). Must satisfy requires-python")
 	printCommand := fs.Bool("print-command", false, "with --target, print the tool-installation container command (which streams a payload, not a finished archive) instead of running it")
@@ -170,15 +177,32 @@ Flags:
 		outName = filepath.Base(workDir) + ".ofpack.tar.gz"
 	}
 
+	pkgOpts := packageOptions{enabled: *packages, repos: packageRepos, base: *packageBase, engine: *engine, target: *target}
+	// Checked before any work: resolving a closure in a base image says
+	// nothing about which architecture it is for, and finding that out
+	// after a download would waste the download.
+	if *packageBase != "" {
+		if !*packages {
+			return fmt.Errorf("--package-base only applies with --packages")
+		}
+		if *target == "" {
+			return fmt.Errorf("--package-base needs --target, for example --target linux/amd64:\nthe packages are for another machine, so the architecture has to be stated rather than taken from this one")
+		}
+	}
+	if *packages && !*uvProject && !hasMiseProject(workDir) {
+		// packages.txt and nothing else: an archive of operating system
+		// packages alone, rather than a toolchain archive with none.
+		return packagesOnlyPack(outName, workDir, pkgOpts, *ofpackBin, *builderImage, *engine, *noUnpacker, *dryRun)
+	}
 	if *uvProject {
 		if *target == "" {
 			return fmt.Errorf("--uv-project needs --target, for example --target linux/amd64:\nthe Python and the wheels have to be built for the machine that will use them")
 		}
-		return uvPack(*target, outName, workDir, *pythonSpec, *image, *builderImage, *engine, *ofpackBin, *noUnpacker, *printCommand, *dryRun)
+		return uvPack(*target, outName, workDir, *pythonSpec, *image, *builderImage, *engine, *ofpackBin, pkgOpts, *noUnpacker, *printCommand, *dryRun)
 	}
 	if *target != "" && *target != ofpack.HostPlatform() {
 		return crossPack(*target, outName, workDir, *image, *builderImage, *engine, *ofpackBin,
-			exclude, *allowUnresolved, *noUnpacker, *printCommand, *dryRun)
+			exclude, pkgOpts, *allowUnresolved, *noUnpacker, *printCommand, *dryRun)
 	}
 
 	fmt.Fprintf(os.Stderr, "Packing the mise tools active in %s\n", workDir)
@@ -193,6 +217,11 @@ Flags:
 		return err
 	}
 
+	cleanupPkgs, err := attachPackagesTo(plan, workDir, pkgOpts)
+	if err != nil {
+		return err
+	}
+	defer cleanupPkgs()
 	if err := attachUnpacker(plan, ofpack.HostTarget(), *ofpackBin, *builderImage, *engine, *noUnpacker); err != nil {
 		return err
 	}
@@ -209,7 +238,7 @@ Flags:
 	return writeArchive(plan, archivePath)
 }
 
-func crossPack(target, outName, workDir, image, builderImage, engine, ofpackBin string, exclude []string, allowUnresolved, noUnpacker, printOnly, dryRun bool) error {
+func crossPack(target, outName, workDir, image, builderImage, engine, ofpackBin string, exclude []string, pkgOpts packageOptions, allowUnresolved, noUnpacker, printOnly, dryRun bool) error {
 	output, err := filepath.Abs(outName)
 	if err != nil {
 		return err
@@ -261,6 +290,11 @@ func crossPack(target, outName, workDir, image, builderImage, engine, ofpackBin 
 	if err != nil {
 		return err
 	}
+	cleanupPkgs, err := attachPackagesTo(packPlan, workDir, pkgOpts)
+	if err != nil {
+		return err
+	}
+	defer cleanupPkgs()
 	if err := attachUnpacker(packPlan, target, ofpackBin, builderImage, engine, noUnpacker); err != nil {
 		return err
 	}
@@ -466,10 +500,20 @@ Flags:
 		fmt.Fprintln(os.Stderr, "dry run: nothing written")
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "Installed mise %s and %d tool(s).\n\nNext:\n  source %s/activate.sh\n  mise ls --current\n",
-		m.MiseVersion, len(m.Tools), absDest)
-	if len(m.Scopes) > 1 {
-		fmt.Fprintln(os.Stderr, "For child directories, run 'ofpack direnv init' there to select their packed versions.")
+	if m.CarriesMise() {
+		fmt.Fprintf(os.Stderr, "Installed mise %s and %d tool(s).\n\nNext:\n  source %s/activate.sh\n  mise ls --current\n",
+			m.MiseVersion, len(m.Tools), absDest)
+		if len(m.Scopes) > 1 {
+			fmt.Fprintln(os.Stderr, "For child directories, run 'ofpack direnv init' there to select their packed versions.")
+		}
+	} else {
+		// A package-only archive has no toolchain, so pointing at an
+		// activate.sh that was deliberately not written would be a lie.
+		fmt.Fprintf(os.Stderr, "Unpacked into %s. This archive carries no mise toolchain.\n", absDest)
+	}
+	if m.Packages != nil {
+		fmt.Fprintf(os.Stderr, "\n%s", ofpack.PackagesSummary(m.Packages))
+		fmt.Fprintf(os.Stderr, "They are on disk only. To install them:\n  sudo ofpack packages install --dest %s\n", absDest)
 	}
 	if len(m.EnvVarNames) > 0 {
 		fmt.Fprintf(os.Stderr, "\nThe source configuration also set these env vars, which ofpack does not carry\n(their values may be secrets) - set them yourself if the tools need them:\n  %s\n",
@@ -528,6 +572,9 @@ func cmdInspect(args []string) error {
 	}
 	if len(m.EnvVarNames) > 0 {
 		fmt.Printf("env var names (values not carried): %s\n", strings.Join(m.EnvVarNames, ", "))
+	}
+	if m.Packages != nil {
+		fmt.Print(ofpack.PackagesSummary(m.Packages))
 	}
 	report := func(title string, notes []ofpack.LinkNote) {
 		if len(notes) == 0 {
@@ -620,4 +667,21 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// hasMiseProject reports whether the selected root or any descendant scope
+// has mise tools to pack. Only when none of them does is a package-only
+// archive the right answer.
+//
+// Looking at the root alone was wrong: a project with its tools in a child
+// directory looked toolless, and the child's tools were silently dropped.
+func hasMiseProject(dir string) bool {
+	has, err := ofpack.AnyScopeHasTools(dir)
+	if err != nil {
+		// Unsure is not the same as "no tools": fall through to the normal
+		// pack, which reports the real problem instead of quietly
+		// producing an archive without them.
+		return true
+	}
+	return has
 }

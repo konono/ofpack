@@ -108,3 +108,40 @@ func ScopedMiseEnv(env Env, root string) (Env, error) {
 	}
 	return env, nil
 }
+
+// AnyScopeHasTools reports whether the selected root or any descendant mise
+// scope activates a tool.
+//
+// Asking only about the root would miss a project whose tools live in a
+// child directory: it would look toolless and be packed as though it had no
+// toolchain at all, silently dropping the child's tools.
+func AnyScopeHasTools(root string) (bool, error) {
+	dirs, err := DiscoverMiseScopes(root)
+	if err != nil {
+		return false, err
+	}
+	env, lookupErr := LookupEnv()
+	if lookupErr != nil {
+		// No mise to ask. That only means "no tools" when the tree does not
+		// ask for any either; a mise config with no mise to read it is a
+		// problem to report, not a scope to drop quietly.
+		if len(dirs) > 1 || hasMiseConfig(root) {
+			return false, fmt.Errorf("%s has mise configuration but mise is not available: %w", root, lookupErr)
+		}
+		return false, nil
+	}
+	env, err = ScopedMiseEnv(env, root)
+	if err != nil {
+		return false, err
+	}
+	for _, dir := range dirs {
+		tools, _, err := ScopeTools(env, dir)
+		if err != nil {
+			return false, fmt.Errorf("mise scope %s: %w", dir, err)
+		}
+		if len(tools) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
