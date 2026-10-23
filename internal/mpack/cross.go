@@ -113,12 +113,8 @@ func containerPathFor(hostDir, home, containerHome string) string {
 	return filepath.ToSlash(filepath.Clean(hostDir))
 }
 
-// collectProjectConfigs finds the mise config files that apply to projectDir.
-// mise walks up the directory tree, so a mise.toml in a parent of the project
-// is part of the effective configuration; copying only the project directory
-// would silently drop those tools. The walk stops at the home directory when
-// the project is inside it, and at the filesystem root otherwise - a project
-// in /work/myapp still picks up /work/mise.toml.
+// collectProjectConfigs is retained for older callers and tests. New scoped
+// packs use collectScopedConfigs, which never includes ancestors of the root.
 func collectProjectConfigs(projectDir, home, containerHome string) []configMount {
 	projectDir = filepath.Clean(projectDir)
 	stop := ""
@@ -148,6 +144,20 @@ func collectProjectConfigs(projectDir, home, containerHome string) []configMount
 				ContainerPath: path.Join(containerPathFor(dir, home, containerHome), name),
 				MountPath:     fmt.Sprintf("/host/mise-config/%d", len(mounts)),
 			})
+		}
+	}
+	return mounts
+}
+
+func collectScopedConfigs(scopes []string, home, containerHome string) []configMount {
+	var mounts []configMount
+	for _, dir := range scopes {
+		for _, name := range miseConfigFiles {
+			host := filepath.Join(dir, filepath.FromSlash(name))
+			if fi, err := os.Lstat(host); err != nil || !fi.Mode().IsRegular() {
+				continue
+			}
+			mounts = append(mounts, configMount{Host: host, ContainerPath: path.Join(containerPathFor(dir, home, containerHome), name), MountPath: fmt.Sprintf("/host/mise-config/%d", len(mounts))})
 		}
 	}
 	return mounts
@@ -198,8 +208,19 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	}
 	containerProject := containerPathFor(project, home, containerHome)
 	var configs []configMount
+	var scopePaths []string
 	if opts.UV == nil {
-		configs = collectProjectConfigs(project, home, containerHome)
+		scopes, err := DiscoverMiseScopes(project)
+		if err != nil {
+			return nil, err
+		}
+		configs = collectScopedConfigs(scopes, home, containerHome)
+		for _, dir := range scopes {
+			if strings.ContainsAny(dir, "\n\r") {
+				return nil, fmt.Errorf("mise scope path contains a newline: %q", dir)
+			}
+			scopePaths = append(scopePaths, containerPathFor(dir, home, containerHome))
+		}
 	}
 
 	// The payload is streamed out over stdout rather than written to a
@@ -225,7 +246,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	// A project can rely entirely on the global config, so only a complete
 	// absence of configuration is an error.
 	if opts.UV == nil && len(configs) == 0 && !hasGlobal {
-		return nil, fmt.Errorf("no mise configuration found for %s: neither the directory and its parents nor a global config dir provide one, so there is nothing to install in the container", project)
+		return nil, fmt.Errorf("no mise configuration found within %s or in the global config dir", project)
 	}
 	for _, c := range configs {
 		args = append(args, "-v", c.Host+":"+c.MountPath+":ro")
@@ -233,7 +254,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	// A uv pack writes its own mise configuration inside the container,
 	// listing only Python and uv, so nothing of this machine's setup - and
 	// none of the unrelocatable symlinks in it - comes along.
-	script := crossScript(opts, hasGlobal, configs)
+	script := scopedCrossScript(opts, hasGlobal, configs, scopePaths)
 	if opts.UV != nil {
 		script = UVBuildScript(opts.UV, opts.PythonSpec)
 	}
@@ -253,6 +274,10 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 // mpack. Mounts are read only, so the config is copied to writable locations
 // before mise touches it.
 func crossScript(opts CrossOptions, hasGlobal bool, configs []configMount) string {
+	return scopedCrossScript(opts, hasGlobal, configs, []string{containerPathFor(opts.ProjectDir, "", "/root")})
+}
+
+func scopedCrossScript(opts CrossOptions, hasGlobal bool, configs []configMount, scopes []string) string {
 	var b strings.Builder
 	b.WriteString(`export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -267,27 +292,24 @@ mkdir -p "$MISE_DATA_DIR" "$MISE_CONFIG_DIR" "$MPACK_CONTAINER_PROJECT"
 		b.WriteString(`cp -R /host/global-config/. "$MISE_CONFIG_DIR"/
 `)
 	}
-	b.WriteString("# Copy only mise's own config files, including those in parent\n")
-	b.WriteString("# directories that mise would also read. Project sources stay on the host.\n")
+	b.WriteString("# Copy only mise configs from the selected project tree.\n")
 	for _, c := range configs {
 		fmt.Fprintf(&b, "mkdir -p %s && cp %s %s\n",
 			shellQuoteIfNeeded(path.Dir(c.ContainerPath)), shellQuoteIfNeeded(c.MountPath), shellQuoteIfNeeded(c.ContainerPath))
 	}
 	b.WriteString(`
 curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh >/dev/null
-cd "$MPACK_CONTAINER_PROJECT"
-
-echo "--- installing tools for the target platform ---" >&2
-mise install --yes >&2
-
-echo "--- collecting ---" >&2
 `)
+	for _, dir := range scopes {
+		fmt.Fprintf(&b, "cd %s\necho %s >&2\nmise install --yes >&2\n", shellQuote(dir), shellQuote("--- installing scope "+dir+" ---"))
+	}
+	b.WriteString("cd \"$MPACK_CONTAINER_PROJECT\"\necho '--- collecting ---' >&2\n")
 	// Everything above logs to stderr so stdout carries only the payload.
 	// mise installs the project's tools, then the payload script streams the
 	// result out. mpack is not involved inside the container at all;
 	// --exclude and --allow-unresolved are applied on this machine, against
 	// the payload.
-	b.WriteString(PayloadScript())
+	b.WriteString(ScopedPayloadScript(scopes))
 	return b.String()
 }
 

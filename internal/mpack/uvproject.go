@@ -35,14 +35,55 @@ const (
 	VenvDir = ".venv"
 )
 
-// projectFiles are the only files mpack opens in a uv project. Everything
-// else - .credentials, .generated-passwords.yml, .envrc, inventories, roles -
-// is neither read nor packed.
+// projectFiles are the dependency files mpack opens in a uv project. When
+// --python is absent it may also read the project's mise.toml, solely to
+// select Python. Everything else - .credentials, .generated-passwords.yml,
+// .envrc, inventories, roles - is neither read nor packed.
 var projectFiles = struct {
 	Pyproject    string
 	Lock         string
 	Requirements string
 }{"pyproject.toml", "uv.lock", "requirements.txt"}
+
+// FindUVProject finds the one project below the chosen pack root. Directory
+// symlinks and generated trees are never followed, so a checkout or .venv
+// cannot accidentally become another project.
+func FindUVProject(root string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != root {
+				switch entry.Name() {
+				case ".git", ".venv", ".mpack", "node_modules", ".tox", ".nox", "__pycache__", "vendor", "build", "dist", ".cache":
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if entry.Name() == projectFiles.Pyproject && entry.Type().IsRegular() {
+			found = append(found, filepath.Dir(path))
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("finding pyproject.toml below %s: %w", root, err)
+	}
+	switch len(found) {
+	case 0:
+		return "", fmt.Errorf("no pyproject.toml found below %s; run from the project root or use -C", root)
+	case 1:
+		return found[0], nil
+	default:
+		return "", fmt.Errorf("multiple pyproject.toml files below %s (%s); use -C to select one project", root, strings.Join(found, ", "))
+	}
+}
 
 // UVProject is the manifest record of a packed uv environment.
 type UVProject struct {
@@ -120,6 +161,111 @@ func ReadUVProject(dir string) (*UVSource, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// ProjectMisePython reads [tools].python only from the project's own
+// mise.toml. A parent project's Python selection must not silently become
+// this project's selection. read reports whether the file was opened.
+func ProjectMisePython(dir string) (selector string, read bool, err error) {
+	return misePythonFromFile(filepath.Join(dir, "mise.toml"))
+}
+
+// ScopedMisePython merges only Python selectors along root..project. The
+// nearest file wins; an ancestor above root is never considered.
+func ScopedMisePython(root, project string) (selector, source string, read bool, err error) {
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", "", false, err
+	}
+	project, err = filepath.Abs(project)
+	if err != nil {
+		return "", "", false, err
+	}
+	rel, err := filepath.Rel(root, project)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", false, fmt.Errorf("project %s is outside pack root %s", project, root)
+	}
+	for dir := root; ; {
+		file := filepath.Join(dir, "mise.toml")
+		value, opened, readErr := misePythonFromFile(file)
+		if readErr != nil {
+			return "", "", read, readErr
+		}
+		read = read || opened
+		if value != "" {
+			selector, source = value, file
+		}
+		if dir == project {
+			break
+		}
+		part, _, _ := strings.Cut(rel, string(filepath.Separator))
+		dir = filepath.Join(dir, part)
+		if rel == part {
+			rel = ""
+		} else {
+			rel = strings.TrimPrefix(rel, part+string(filepath.Separator))
+		}
+	}
+	return selector, source, read, nil
+}
+
+// GlobalMisePython reads only the global Python selector as a final fallback.
+// An explicit global-config file takes precedence over MISE_CONFIG_DIR.
+func GlobalMisePython() (selector, source string, err error) {
+	if path := os.Getenv("MISE_GLOBAL_CONFIG_FILE"); path != "" {
+		selector, _, err = misePythonFromFile(path)
+		return selector, path, err
+	}
+	dir := DefaultGlobalConfigDir()
+	for _, name := range []string{"config.toml", "mise.toml"} {
+		path := filepath.Join(dir, name)
+		value, read, readErr := misePythonFromFile(path)
+		if readErr != nil {
+			return "", "", readErr
+		}
+		if read && value != "" {
+			return value, path, nil
+		}
+	}
+	return "", "", nil
+}
+
+func misePythonFromFile(path string) (selector string, read bool, err error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	body, ok := tomlTableBody(string(data), "tools")
+	if !ok {
+		return "", true, nil
+	}
+	idx := findKey(body, "python")
+	if idx < 0 {
+		return "", true, nil
+	}
+	line := body[idx:]
+	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+		line = line[:nl]
+	}
+	_, raw, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", true, fmt.Errorf("project mise.toml [tools].python is invalid; use --python X.Y to select Python explicitly")
+	}
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, " #"); i >= 0 {
+		raw = strings.TrimSpace(raw[:i])
+	}
+	if len(raw) < 3 || !(raw[0] == '"' && raw[len(raw)-1] == '"' || raw[0] == '\'' && raw[len(raw)-1] == '\'') {
+		return "", true, fmt.Errorf("project mise.toml [tools].python is not a single quoted version such as \"3.12\" or \"latest\"; use --python X.Y")
+	}
+	selector = unquoteTOML(raw)
+	if selector == "" {
+		return "", true, fmt.Errorf("project mise.toml [tools].python is empty; use --python X.Y")
+	}
+	return selector, true, nil
 }
 
 // MissingFromRequirementsTxt reports dependencies that pyproject declares but
@@ -782,22 +928,84 @@ func snapshotEnv(dest string) ([]string, error) {
 	), nil
 }
 
-// PythonSpecFor picks the Python to carry. requires-python in pyproject is
-// the project's own statement of what it needs, so it is preferred over a
-// default.
+// PythonSpecFor selects the lowest Python minor admitted by requires-python.
+// Dependency resolution remains authoritative: if packages require a newer
+// interpreter, pack fails instead of silently changing this selection.
 func PythonSpecFor(s *UVSource) (string, error) {
 	requires := RequiresPython(s)
 	if requires == "" {
-		return "", fmt.Errorf("%s states no requires-python, so mpack cannot tell which Python to carry; pass --python X.Y", projectFiles.Pyproject)
+		return "", fmt.Errorf("%s states no requires-python lower bound; pass --python X.Y or set [tools].python in a scoped or global mise config", projectFiles.Pyproject)
 	}
-	spec := pythonSpecFromRequires(requires)
+	spec, err := PythonFloorForLatest(requires)
+	if err != nil {
+		return "", err
+	}
 	if spec == "" {
 		return "", fmt.Errorf("requires-python = %q names no Python version to install (an upper bound alone says only which versions are excluded); pass --python X.Y", requires)
 	}
-	if ok, why := PythonSatisfies(spec, requires); !ok {
-		return "", fmt.Errorf("requires-python = %q is not satisfiable by a version mpack can derive (%s); pass --python X.Y", requires, why)
-	}
 	return spec, nil
+}
+
+// PythonFloorForLatest uses the lowest minor allowed by a declared lower
+// bound when mise says "latest". With no lower bound, mise keeps its normal
+// latest behavior. A contradictory range is rejected before any download.
+func PythonFloorForLatest(requires string) (string, error) {
+	var floor string
+	for _, part := range strings.Split(requires, ",") {
+		op, version := splitSpecifier(part)
+		if op != ">=" && op != ">" && op != "==" && op != "~=" {
+			continue
+		}
+		candidate, ok := majorMinor(version)
+		if !ok {
+			continue
+		}
+		if op == ">" {
+			major, minor := versionParts(candidate)
+			candidate = fmt.Sprintf("%d.%d", major, minor+1)
+		}
+		if floor == "" {
+			floor = candidate
+		} else {
+			major, minor := versionParts(candidate)
+			floorMajor, floorMinor := versionParts(floor)
+			if compareMinor(major, minor, floorMajor, floorMinor) > 0 {
+				floor = candidate
+			}
+		}
+	}
+	if floor != "" {
+		if ok, why := PythonSatisfies(floor, requires); !ok {
+			return "", fmt.Errorf("requires-python = %q has conflicting constraints at its Python floor %s: %s", requires, floor, why)
+		}
+	}
+	return floor, nil
+}
+
+// pythonMinorPinned recognizes an exact minor or an upper bound that closes
+// immediately after the candidate minor. It deliberately errs toward asking
+// for --python when a specifier is more complicated than this.
+func pythonMinorPinned(requires, candidate string) bool {
+	major, minor := versionParts(candidate)
+	next := fmt.Sprintf("%d.%d", major, minor+1)
+	for _, part := range strings.Split(requires, ",") {
+		op, version := splitSpecifier(part)
+		bound, ok := majorMinor(version)
+		if !ok {
+			continue
+		}
+		switch {
+		case op == "==" && bound == candidate:
+			return true
+		case op == "~=" && bound == candidate && strings.Count(strings.TrimSpace(version), ".") >= 2:
+			return true
+		case op == "<" && bound == next:
+			return true
+		case op == "<=" && bound == candidate:
+			return true
+		}
+	}
+	return false
 }
 
 // pythonSpecFromRequires derives a "X.Y" to install from a requires-python
@@ -888,6 +1096,21 @@ func PythonSatisfies(spec, requires string) (bool, string) {
 		}
 	}
 	return true, ""
+}
+
+// ConcretePythonVersion distinguishes a numeric mise selector from aliases
+// such as "latest", which can only be checked after target-side resolution.
+func ConcretePythonVersion(spec string) bool {
+	parts := strings.Split(spec, ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if !isDigits(part) {
+			return false
+		}
+	}
+	return true
 }
 
 func versionParts(v string) (int, int) {

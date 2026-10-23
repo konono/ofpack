@@ -38,6 +38,9 @@ const (
 	// would drop it while reporting success, leaving a tree that looks
 	// unpacked but cannot restore; the higher number makes it stop instead.
 	SchemaVersionUV = 2
+	// SchemaVersionScoped records the tool selection for the project root and
+	// each descendant mise scope. Older unpackers must reject this layout.
+	SchemaVersionScoped = 3
 )
 
 // Manifest is the metadata stored at the head of every mpack archive.
@@ -61,8 +64,12 @@ type Manifest struct {
 	// the packer's account name.
 	HomeRelativeProjectPath string `json:"home_relative_project_path,omitempty"`
 
-	Tools      []Tool `json:"tools"`
-	HasCatalog bool   `json:"has_catalog"`
+	Tools []Tool `json:"tools"`
+	// Scopes select from Tools at each project-relative directory. Tools is
+	// the physical union to install; Scopes records which version is active
+	// in each directory. A root scope with Path "." is required for schema 3.
+	Scopes     []Scope `json:"scopes,omitempty"`
+	HasCatalog bool    `json:"has_catalog"`
 	// HasUnpacker records whether bin/mpack is present, so unpack installs it
 	// alongside everything else.
 	HasUnpacker bool `json:"has_unpacker,omitempty"`
@@ -88,6 +95,14 @@ type Manifest struct {
 	UVProject *UVProject `json:"uv_project,omitempty"`
 
 	Stats Stats `json:"stats"`
+}
+
+// Scope records the complete active tool selection at one project-relative
+// directory. Descendants without their own scope inherit the deepest scope
+// on their path.
+type Scope struct {
+	Path  string `json:"path"`
+	Tools []Tool `json:"tools"`
 }
 
 // MpackSubdir is the directory, relative to the project directory, where an

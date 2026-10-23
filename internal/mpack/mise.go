@@ -31,6 +31,9 @@ type Env struct {
 	Bin string
 	// Version is the first token of `mise --version`.
 	Version string
+	// Vars are per-command environment overrides used to keep a pack rooted
+	// at its selected directory without changing the process environment.
+	Vars []string
 }
 
 // LookupEnv locates the mise executable to pack. MPACK_MISE_BIN overrides the
@@ -67,8 +70,26 @@ func LookupEnv() (Env, error) {
 }
 
 func runMise(bin, dir string, args ...string) ([]byte, error) {
+	return runMiseWithVars(bin, dir, nil, args...)
+}
+
+func runMiseWithVars(bin, dir string, vars []string, args ...string) ([]byte, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
+	if len(vars) > 0 {
+		keys := map[string]bool{}
+		for _, v := range vars {
+			key, _, _ := strings.Cut(v, "=")
+			keys[key] = true
+		}
+		for _, v := range os.Environ() {
+			key, _, _ := strings.Cut(v, "=")
+			if !keys[key] {
+				cmd.Env = append(cmd.Env, v)
+			}
+		}
+		cmd.Env = append(cmd.Env, vars...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -82,7 +103,16 @@ func runMise(bin, dir string, args ...string) ([]byte, error) {
 // i.e. the merged result of the global and any local mise configuration. It
 // also returns the installs root shared by every tool.
 func CurrentTools(env Env, workDir string) (tools []Tool, installsRoot string, err error) {
-	out, err := runMise(env.Bin, workDir, "ls", "--current", "--json")
+	return currentTools(env, workDir, false)
+}
+
+// ScopeTools allows an empty root scope when only a descendant declares tools.
+func ScopeTools(env Env, workDir string) (tools []Tool, installsRoot string, err error) {
+	return currentTools(env, workDir, true)
+}
+
+func currentTools(env Env, workDir string, allowEmpty bool) (tools []Tool, installsRoot string, err error) {
+	out, err := runMiseWithVars(env.Bin, workDir, env.Vars, "ls", "--current", "--json")
 	if err != nil {
 		return nil, "", err
 	}
@@ -122,6 +152,9 @@ func CurrentTools(env Env, workDir string) (tools []Tool, installsRoot string, e
 		}
 	}
 	if len(tools) == 0 {
+		if allowEmpty {
+			return nil, "", nil
+		}
 		return nil, "", fmt.Errorf("no installed and active mise tools in %s", workDir)
 	}
 	// `mise ls --current --json` returns versions sorted, not in the order
@@ -217,7 +250,7 @@ func precedenceRanks(env Env, workDir, installsRoot string) (map[string]int, err
 	//, unlike `mise env`, carries no environment values at all, so no secret
 	// is ever read. Older mise versions lack it; fall back to the PATH mise
 	// would export.
-	if out, err := runMise(env.Bin, workDir, "bin-paths"); err == nil {
+	if out, err := runMiseWithVars(env.Bin, workDir, env.Vars, "bin-paths"); err == nil {
 		return RanksFromBinPaths(strings.Split(string(out), "\n"), installsRoot), nil
 	}
 	vars, err := miseEnv(env, workDir)
@@ -261,7 +294,7 @@ func RanksFromBinPaths(entries []string, installsRoot string) map[string]int {
 
 // miseEnv returns the environment mise would export in workDir.
 func miseEnv(env Env, workDir string) (map[string]string, error) {
-	out, err := runMise(env.Bin, workDir, "env", "--json")
+	out, err := runMiseWithVars(env.Bin, workDir, env.Vars, "env", "--json")
 	if err != nil {
 		// `mise env` can fail for reasons unrelated to packing (no shell
 		// integration, a broken hook); that is not worth aborting a pack.

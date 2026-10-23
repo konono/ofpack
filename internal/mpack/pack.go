@@ -85,7 +85,11 @@ func BuildPlan(opts PackOptions) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools, installsRoot, err := CurrentTools(env, workDir)
+	scopeDirs, err := DiscoverMiseScopes(workDir)
+	if err != nil {
+		return nil, err
+	}
+	env, err = ScopedMiseEnv(env, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -94,21 +98,53 @@ func BuildPlan(opts PackOptions) (*Plan, error) {
 	for _, name := range opts.Exclude {
 		excluded[name] = true
 	}
-	kept := tools[:0:0]
-	for _, t := range tools {
-		if excluded[t.Name] {
-			delete(excluded, t.Name)
-			logf(opts.Log, "excluding %s@%s\n", t.Name, t.Version)
-			continue
+	seenExcluded := map[string]bool{}
+	var scopes []Scope
+	var installsRoot string
+	union := map[string]Tool{}
+	for _, dir := range scopeDirs {
+		tools, root, err := ScopeTools(env, dir)
+		if err != nil {
+			return nil, fmt.Errorf("mise scope %s: %w", dir, err)
 		}
-		kept = append(kept, t)
+		if root != "" {
+			if installsRoot != "" && installsRoot != root {
+				return nil, fmt.Errorf("mise scopes span multiple installs roots (%s and %s)", installsRoot, root)
+			}
+			installsRoot = root
+		}
+		rel, err := filepath.Rel(workDir, dir)
+		if err != nil {
+			return nil, err
+		}
+		scope := Scope{Path: filepath.ToSlash(rel)}
+		for _, t := range tools {
+			if excluded[t.Name] {
+				seenExcluded[t.Name] = true
+				logf(opts.Log, "excluding %s@%s\n", t.Name, t.Version)
+				continue
+			}
+			scope.Tools = append(scope.Tools, t)
+			if old, exists := union[t.RelPath]; exists && (old.Name != t.Name || old.Version != t.Version) {
+				return nil, fmt.Errorf("install path %s is claimed by both %s@%s and %s@%s", t.RelPath, old.Name, old.Version, t.Name, t.Version)
+			}
+			union[t.RelPath] = t
+		}
+		scopes = append(scopes, scope)
 	}
 	for name := range excluded {
-		return nil, fmt.Errorf("--exclude %s: no such active tool", name)
+		if !seenExcluded[name] {
+			return nil, fmt.Errorf("--exclude %s: no such active tool", name)
+		}
 	}
-	if len(kept) == 0 {
+	if len(union) == 0 {
 		return nil, fmt.Errorf("every active tool was excluded; nothing to pack")
 	}
+	kept := make([]Tool, 0, len(union))
+	for _, t := range union {
+		kept = append(kept, t)
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].RelPath < kept[j].RelPath })
 
 	units := make([]string, 0, len(kept)+1)
 	for _, t := range kept {
@@ -121,17 +157,28 @@ func BuildPlan(opts PackOptions) (*Plan, error) {
 	}
 	sort.Strings(units)
 
-	envNames, err := EnvVarNames(env, workDir)
-	if err != nil {
-		return nil, err
+	envNameSet := map[string]bool{}
+	for _, dir := range scopeDirs {
+		names, err := EnvVarNames(env, dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			envNameSet[name] = true
+		}
 	}
+	envNames := make([]string, 0, len(envNameSet))
+	for name := range envNameSet {
+		envNames = append(envNames, name)
+	}
+	sort.Strings(envNames)
 
 	plan := &Plan{
 		Env:          env,
 		InstallsRoot: installsRoot,
 		Units:        units,
 		Manifest: Manifest{
-			Schema:       SchemaVersion,
+			Schema:       SchemaVersionScoped,
 			MpackVersion: opts.Version,
 			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 			OS:           runtime.GOOS,
@@ -140,6 +187,7 @@ func BuildPlan(opts PackOptions) (*Plan, error) {
 
 			HomeRelativeProjectPath: relToHome(workDir),
 			Tools:                   kept,
+			Scopes:                  scopes,
 			HasCatalog:              hasCatalog,
 			EnvVarNames:             envNames,
 		},
@@ -182,25 +230,61 @@ func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (
 	if err != nil {
 		return nil, err
 	}
-	tools, err := payloadToolsFromMeta(meta)
-	if err != nil {
-		return nil, err
+	var tools []Tool
+	var scopes []Scope
+	if len(meta.scopes) > 0 {
+		union := map[string]Tool{}
+		for _, s := range meta.scopes {
+			selected, err := toolsFromPayloadScope(s.tools, s.binPaths, meta.installsRoot, true)
+			if err != nil {
+				return nil, fmt.Errorf("payload scope %s: %w", s.path, err)
+			}
+			scopes = append(scopes, Scope{Path: s.path, Tools: selected})
+			for _, t := range selected {
+				union[t.RelPath] = t
+			}
+		}
+		for _, t := range union {
+			tools = append(tools, t)
+		}
+		sort.Slice(tools, func(i, j int) bool { return tools[i].RelPath < tools[j].RelPath })
+	} else {
+		tools, err = payloadToolsFromMeta(meta)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	excluded := map[string]bool{}
 	for _, name := range opts.Exclude {
 		excluded[name] = true
 	}
+	excludedNames := map[string]bool{}
+	for name := range excluded {
+		excludedNames[name] = true
+	}
+	seenExcluded := map[string]bool{}
 	kept := tools[:0:0]
 	for _, t := range tools {
 		if excluded[t.Name] {
-			delete(excluded, t.Name)
+			seenExcluded[t.Name] = true
 			continue
 		}
 		kept = append(kept, t)
 	}
+	for i := range scopes {
+		selected := scopes[i].Tools[:0:0]
+		for _, t := range scopes[i].Tools {
+			if !excludedNames[t.Name] {
+				selected = append(selected, t)
+			}
+		}
+		scopes[i].Tools = selected
+	}
 	for name := range excluded {
-		return nil, fmt.Errorf("--exclude %s: the container did not install a tool by that name", name)
+		if !seenExcluded[name] {
+			return nil, fmt.Errorf("--exclude %s: the container did not install a tool by that name", name)
+		}
 	}
 	if len(kept) == 0 {
 		return nil, fmt.Errorf("every tool the container installed was excluded; nothing to pack")
@@ -230,7 +314,12 @@ func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (
 		Units:        units,
 		payloadPath:  payloadPath,
 		Manifest: Manifest{
-			Schema:       SchemaVersion,
+			Schema: func() int {
+				if len(scopes) > 0 {
+					return SchemaVersionScoped
+				}
+				return SchemaVersion
+			}(),
 			MpackVersion: opts.Version,
 			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 			// The archive describes the platform it was built for, which is
@@ -239,9 +328,13 @@ func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (
 			Arch:                    goarch,
 			MiseVersion:             meta.miseVersion,
 			Tools:                   kept,
+			Scopes:                  scopes,
 			EnvVarNames:             meta.envNames,
 			HomeRelativeProjectPath: relToHome(workDir),
 		},
+	}
+	if err := validateScopedManifest(&p.Manifest); err != nil {
+		return nil, fmt.Errorf("invalid container scope metadata: %w", err)
 	}
 	if err := p.scanPayloadEntries(opts); err != nil {
 		return nil, err
@@ -489,7 +582,11 @@ func (p *Plan) Write(w io.Writer) error {
 			return err
 		}
 	}
-	if err := writeBytes(tw, ConfigName, 0o644, RenderConfig(p.Manifest.Tools), now); err != nil {
+	rootTools := p.Manifest.Tools
+	if len(p.Manifest.Scopes) > 0 {
+		rootTools = p.Manifest.Scopes[0].Tools
+	}
+	if err := writeBytes(tw, ConfigName, 0o644, RenderConfig(rootTools), now); err != nil {
 		return err
 	}
 

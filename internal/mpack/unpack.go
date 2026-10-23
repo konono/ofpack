@@ -124,11 +124,14 @@ func ReadManifest(r io.Reader) (*Manifest, error) {
 	if err := checkSchema(m.Schema); err != nil {
 		return nil, err
 	}
+	if err := validateScopedManifest(&m); err != nil {
+		return nil, err
+	}
 	return &m, nil
 }
 
 // supportedSchemas are the archive layouts this mpack can unpack in full.
-var supportedSchemas = []int{SchemaVersion, SchemaVersionUV}
+var supportedSchemas = []int{SchemaVersion, SchemaVersionUV, SchemaVersionScoped}
 
 func checkSchema(schema int) error {
 	for _, s := range supportedSchemas {
@@ -177,7 +180,81 @@ func unitsFor(m *Manifest) []unit {
 		unit{archivePrefix: DirenvName, destRel: DirenvName, isFile: true, generated: true},
 		unit{archivePrefix: InstalledManifestName, destRel: InstalledManifestName, isFile: true, generated: true},
 	)
+	for _, scope := range m.Scopes {
+		if scope.Path == "." {
+			continue
+		}
+		units = append(units,
+			unit{archivePrefix: scopeConfigName(scope.Path), destRel: filepath.FromSlash(scopeConfigName(scope.Path)), isFile: true, generated: true},
+			unit{archivePrefix: scopeDirenvName(scope.Path), destRel: filepath.FromSlash(scopeDirenvName(scope.Path)), isFile: true, generated: true},
+		)
+	}
 	return units
+}
+
+func scopeConfigName(rel string) string { return path.Join("config", "scopes", rel, "config.toml") }
+func scopeDirenvName(rel string) string { return path.Join("config", "scopes", rel, DirenvName) }
+
+// validateScopedManifest runs before destination creation. Scope paths and
+// references are untrusted archive input and become generated file paths.
+func validateScopedManifest(m *Manifest) error {
+	if m.Schema != SchemaVersionScoped {
+		if len(m.Scopes) != 0 {
+			return fmt.Errorf("archive schema %d cannot contain scoped tool selections", m.Schema)
+		}
+		return nil
+	}
+	if len(m.Scopes) == 0 {
+		return errors.New("scoped archive has no root scope")
+	}
+	known := map[string]bool{}
+	installPaths := map[string]bool{}
+	for _, tool := range m.Tools {
+		clean, err := CheckArchiveName(tool.RelPath)
+		if err != nil {
+			return fmt.Errorf("invalid install path for %s@%s: %w", tool.Name, tool.Version, err)
+		}
+		if clean != tool.RelPath {
+			return fmt.Errorf("invalid install path for %s@%s: %q is not canonical", tool.Name, tool.Version, tool.RelPath)
+		}
+		if installPaths[tool.RelPath] {
+			return fmt.Errorf("multiple packed tools claim install path %s", tool.RelPath)
+		}
+		installPaths[tool.RelPath] = true
+		key := tool.Name + "\x00" + tool.Version + "\x00" + tool.RelPath
+		if known[key] {
+			return fmt.Errorf("duplicate packed tool %s@%s at %s", tool.Name, tool.Version, tool.RelPath)
+		}
+		known[key] = true
+	}
+	seen := map[string]bool{}
+	for _, scope := range m.Scopes {
+		if scope.Path != "." {
+			clean, err := CheckArchiveName(scope.Path)
+			if err != nil || clean != scope.Path {
+				return fmt.Errorf("invalid scope path %q", scope.Path)
+			}
+		}
+		if seen[scope.Path] {
+			return fmt.Errorf("duplicate scope path %q", scope.Path)
+		}
+		seen[scope.Path] = true
+		included := map[string]bool{}
+		for _, tool := range scope.Tools {
+			key := tool.Name + "\x00" + tool.Version + "\x00" + tool.RelPath
+			if !known[key] {
+				return fmt.Errorf("scope %q refers to unpacked tool %s@%s at %s", scope.Path, tool.Name, tool.Version, tool.RelPath)
+			}
+			if included[key] {
+				return fmt.Errorf("scope %q repeats tool %s@%s", scope.Path, tool.Name, tool.Version)
+			}
+			included[key] = true
+		}
+	}
+	if !seen["."] {
+		return errors.New("scoped archive has no root scope")
+	}
+	return nil
 }
 
 // stageSidecars writes the generated files into the staging directory so the
@@ -203,6 +280,26 @@ func stageSidecars(staging, dest string, m *Manifest) error {
 		}
 		if err := writeRegular(full, f.mode, bytes.NewReader(f.body), int64(len(f.body))); err != nil {
 			return err
+		}
+	}
+	for _, scope := range m.Scopes {
+		if scope.Path == "." {
+			continue
+		}
+		for _, f := range []struct{ name, body string }{
+			{scopeConfigName(scope.Path), string(RenderConfig(scope.Tools))},
+			{scopeDirenvName(scope.Path), ScopedDirenvScript(dest, scope.Path)},
+		} {
+			full, err := ResolveUnder(staging, f.name)
+			if err != nil {
+				return err
+			}
+			if err := MkdirAllNoSymlink(staging, path.Dir(f.name), 0o755); err != nil {
+				return err
+			}
+			if err := writeRegular(full, 0o644, strings.NewReader(f.body), int64(len(f.body))); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -267,6 +364,9 @@ func Unpack(archive io.Reader, opts UnpackOptions) (*Manifest, error) {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 	if err := checkSchema(m.Schema); err != nil {
+		return nil, err
+	}
+	if err := validateScopedManifest(&m); err != nil {
 		return nil, err
 	}
 	if !opts.SkipArch {
@@ -563,6 +663,14 @@ func (t *moveTx) commit() error {
 // configuration than the archive carries. Every MISE_* the caller happens to
 // have is dropped, then only what the snapshot needs is set.
 func miseEnvPreamble(rootExpr string) string {
+	return miseEnvPreambleForConfig(rootExpr, `"$MPACK_ROOT/config"`)
+}
+
+func miseEnvPreambleForConfig(rootExpr, configExpr string) string {
+	globalExpr := `"$MISE_CONFIG_DIR/config.toml"`
+	if configExpr == `"$MPACK_ROOT/config"` {
+		globalExpr = `"$MPACK_ROOT/config/config.toml"`
+	}
 	return fmt.Sprintf(`MPACK_ROOT=%s
 
 # Drop any inherited MISE_* so nothing redirects mise away from the snapshot.
@@ -573,13 +681,13 @@ done
 unset _mpack_var
 
 export MISE_DATA_DIR="$MPACK_ROOT"
-export MISE_CONFIG_DIR="$MPACK_ROOT/config"
+export MISE_CONFIG_DIR=%s
 # Set explicitly: this one wins over MISE_CONFIG_DIR, so leaving it unset
 # would let a stray value in the environment take over.
-export MISE_GLOBAL_CONFIG_FILE="$MPACK_ROOT/config/config.toml"
+export MISE_GLOBAL_CONFIG_FILE=%s
 # Everything is already on disk; never reach for the network.
 export MISE_OFFLINE=1
-`, rootExpr)
+`, rootExpr, configExpr, globalExpr)
 }
 
 // ActivateScript renders the POSIX shell snippet that points mise at the
@@ -677,6 +785,34 @@ PATH_add "$MPACK_ROOT/bin"
 # Re-evaluate when the unpacked tree is replaced.
 watch_file "$MPACK_ROOT/`+InstalledManifestName+`"
 `, time.Now().UTC().Format(time.RFC3339), q, miseEnvPreamble(`"$PWD"`))
+}
+
+// ScopedDirenvScript selects a child directory's exact-version tool set.
+// direnv's source_env changes PWD to the sourced file's directory, so this
+// computes the unpacked root from that stable location at evaluation time.
+func ScopedDirenvScript(dest, rel string) string {
+	depth := len(strings.Split(rel, "/")) + 2 // config/scopes/<rel>
+	up := strings.Repeat("../", depth)
+	configRel := path.Join("config", "scopes", rel)
+	rootExpr := "$(cd \"$PWD/" + up + "\" && pwd -P)"
+	configExpr := `"$MPACK_ROOT/"` + shellQuote(configRel)
+	return fmt.Sprintf(`# Generated by mpack for scope %s. Load through direnv source_env.
+# This file evaluates in its own directory, so its paths remain movable.
+%s
+if [ ! -x "$MPACK_ROOT/bin/mise" ]; then
+  echo "mpack: scoped toolchain has no bin/mise at $MPACK_ROOT" >&2
+  exit 1
+fi
+if ! _mpack_env="$("$MPACK_ROOT/bin/mise" -C / env -s bash)"; then
+  echo "mpack: scoped mise environment failed for %s" >&2
+  exit 1
+fi
+eval "$_mpack_env"
+unset _mpack_env
+PATH_add "$MPACK_ROOT/bin"
+watch_file "$MPACK_ROOT/%s"
+watch_file "$MISE_GLOBAL_CONFIG_FILE"
+`, rel, miseEnvPreambleForConfig(rootExpr, configExpr), rel, InstalledManifestName)
 }
 
 func shellQuote(s string) string {

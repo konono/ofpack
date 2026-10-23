@@ -18,15 +18,58 @@ import (
 func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine, mpackBin string,
 	noUnpacker, printOnly, dryRun bool) error {
 
+	packRoot, err := filepath.Abs(projectDir)
+	if err != nil {
+		return err
+	}
+	projectDir, err = mpack.FindUVProject(packRoot)
+	if err != nil {
+		return err
+	}
 	source, err := mpack.ReadUVProject(projectDir)
 	if err != nil {
 		return err
 	}
 	requires := mpack.RequiresPython(source)
+	pythonSource := "--python"
+	readMise := false
 	if pythonSpec == "" {
-		pythonSpec, err = mpack.PythonSpecFor(source)
+		var configSource string
+		pythonSpec, configSource, readMise, err = mpack.ScopedMisePython(packRoot, projectDir)
 		if err != nil {
 			return err
+		}
+		if pythonSpec != "" {
+			pythonSource = configSource + " [tools].python"
+			if pythonSpec == "latest" {
+				floor, floorErr := mpack.PythonFloorForLatest(requires)
+				if floorErr != nil {
+					return floorErr
+				}
+				if floor != "" {
+					pythonSpec = floor
+					pythonSource = "the lower bound of pyproject.toml requires-python (scoped mise.toml requests latest)"
+				}
+			}
+		} else {
+			// A project constraint is more relevant than a machine-wide default.
+			floor, floorErr := mpack.PythonFloorForLatest(requires)
+			if floorErr != nil {
+				return floorErr
+			}
+			if floor != "" {
+				pythonSpec = floor
+				pythonSource = "pyproject.toml requires-python lower bound"
+			} else {
+				pythonSpec, configSource, err = mpack.GlobalMisePython()
+				if err != nil {
+					return err
+				}
+				if pythonSpec == "" {
+					return fmt.Errorf("no Python version selected: set --python X.Y, requires-python in pyproject.toml, or [tools].python in scoped or global mise configuration")
+				}
+				pythonSource = configSource + " [tools].python (global fallback)"
+			}
 		}
 	} else if ok, why := mpack.PythonSatisfies(pythonSpec, requires); !ok {
 		// A version chosen by hand must still be one the project accepts,
@@ -34,9 +77,14 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 		return fmt.Errorf("--python %s conflicts with requires-python = %q in %s: %s",
 			pythonSpec, requires, "pyproject.toml", why)
 	}
+	if mpack.ConcretePythonVersion(pythonSpec) {
+		if ok, why := mpack.PythonSatisfies(pythonSpec, requires); !ok {
+			return fmt.Errorf("%s selected Python %s, which conflicts with requires-python = %q: %s", pythonSource, pythonSpec, requires, why)
+		}
+	}
 
 	fmt.Fprintf(os.Stderr, "Packing the Python environment for %s, built for %s.\n", source.Dir, target)
-	fmt.Fprintf(os.Stderr, "  python %s, dependencies from %s:\n", pythonSpec, "pyproject.toml")
+	fmt.Fprintf(os.Stderr, "  python %s (selected by %s); dependencies from pyproject.toml:\n", pythonSpec, pythonSource)
 	for _, r := range source.Requirements {
 		fmt.Fprintf(os.Stderr, "    %s\n", r)
 	}
@@ -51,7 +99,12 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 		fmt.Fprintf(os.Stderr, "  note: requirements.txt does not mention %s; packing what pyproject.toml declares\n",
 			strings.Join(missing, ", "))
 	}
-	fmt.Fprintf(os.Stderr, "  the project's own files are not packed, and only pyproject.toml, uv.lock and requirements.txt were read\n\n")
+	fmt.Fprintf(os.Stderr, "  other mise tools and settings are ignored in --uv-project mode; configuration above %s is not read\n", packRoot)
+	if readMise {
+		fmt.Fprintf(os.Stderr, "  project source is not packed; only pyproject.toml, uv.lock, requirements.txt and scoped mise.toml files were read\n\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "  project source is not packed; pyproject.toml, uv.lock and requirements.txt were read; a global Python selector may be used when no project floor exists\n\n")
+	}
 
 	output, err := filepath.Abs(outName)
 	if err != nil {
@@ -83,6 +136,14 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	defer os.RemoveAll(tmpDir)
 	payload := filepath.Join(tmpDir, "payload.tar.gz")
 	if err := mpack.RunCross(plan, payload, os.Stderr); err != nil {
+		if pythonSpec == "latest" {
+			err = fmt.Errorf("project mise.toml selected python=latest; the target's newest Python may be too new for the declared dependencies. If resolution or wheel download failed, pin a compatible minor with --python X.Y: %w", err)
+		} else if strings.Contains(pythonSource, "requires-python lower bound") || strings.HasPrefix(pythonSource, "the lower bound of pyproject.toml") {
+			err = fmt.Errorf("Python %s was selected from the requires-python lower bound, but its installation or dependency resolution failed; choose a compatible version with --python X.Y or pin project mise.toml: %w", pythonSpec, err)
+		}
+		if _, statErr := os.Stat(output); statErr == nil {
+			err = fmt.Errorf("%w. Existing output %s was not replaced", err, output)
+		}
 		return err
 	}
 
@@ -97,6 +158,9 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	uvRecord, err := mpack.AttachUVProject(packPlan, source, payload)
 	if err != nil {
 		return err
+	}
+	if ok, why := mpack.PythonSatisfies(uvRecord.PythonVersion, requires); !ok {
+		return fmt.Errorf("the resolved Python %s (%s) for %s does not satisfy requires-python = %q: %s. Choose a compatible --python X.Y", uvRecord.PythonVersion, pythonSource, target, requires, why)
 	}
 
 	// An archive that cannot actually be restored is the failure worth

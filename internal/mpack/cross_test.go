@@ -113,9 +113,9 @@ func TestBuildCrossPlanWithoutGlobalConfig(t *testing.T) {
 	}
 }
 
-// mise reads config from parent directories too, so a cross pack that copied
-// only the project directory would silently install fewer tools.
-func TestCrossPackCarriesAncestorConfigs(t *testing.T) {
+// A scope root is an explicit boundary: ancestors above it must not be
+// mistaken for project configuration, while descendants must be collected.
+func TestCrossPackScopesStayWithinRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "work", "myapp")
@@ -129,6 +129,13 @@ func TestCrossPackCarriesAncestorConfigs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "mise.toml"), []byte("[tools]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	child := filepath.Join(project, "app")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "mise.toml"), []byte("[tools]\nnode = \"24.1.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	plan, err := BuildCrossPlan(CrossOptions{
 		Target: "linux/amd64", ProjectDir: project,
 		Output: filepath.Join(t.TempDir(), "o.tar.gz"),
@@ -137,19 +144,19 @@ func TestCrossPackCarriesAncestorConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(plan.Args, " ")
+	if strings.Contains(args, filepath.Join(home, "work", "mise.toml")) {
+		t.Fatal("ancestor config was mounted")
+	}
 	for _, want := range []string{
-		filepath.Join(home, "work", "mise.toml") + ":/host/mise-config/0:ro",
-		filepath.Join(project, "mise.toml") + ":/host/mise-config/1:ro",
+		filepath.Join(project, "mise.toml") + ":/host/mise-config/0:ro",
+		filepath.Join(child, "mise.toml") + ":/host/mise-config/1:ro",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("missing mount %q:\n%s", want, args)
 		}
 	}
-	// Parents are copied first, so the nearer config still wins.
-	parent := strings.Index(plan.Script, "/root/work/mise.toml")
-	child := strings.Index(plan.Script, "/root/work/myapp/mise.toml")
-	if parent < 0 || child < 0 || parent > child {
-		t.Errorf("ancestor config must be copied before the project's own:\n%s", plan.Script)
+	if !strings.Contains(plan.Script, "/root/work/myapp/app") || !strings.Contains(plan.Script, "scopes/1/tools.json") {
+		t.Errorf("child scope not installed and captured:\n%s", plan.Script)
 	}
 }
 
@@ -169,10 +176,9 @@ func TestCrossPackFailsWithoutAnyMiseConfig(t *testing.T) {
 	}
 }
 
-// A project outside the home directory still inherits its parents' config:
-// /work/myapp must pick up /work/mise.toml. These paths cannot be mirrored
-// under the container home, so they are reproduced absolutely.
-func TestCrossPackCarriesAncestorConfigsOutsideHome(t *testing.T) {
+// Outside HOME, the root boundary remains the same and the container mirrors
+// its absolute path without importing its parent.
+func TestCrossPackExcludesAncestorConfigsOutsideHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -198,17 +204,11 @@ func TestCrossPackCarriesAncestorConfigsOutsideHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(plan.Args, " ")
-	if !strings.Contains(args, filepath.Join(work, "mise.toml")+":/host/mise-config/") {
-		t.Errorf("the parent config outside the home dir is not mounted:\n%s", args)
+	if strings.Contains(args, filepath.Join(work, "mise.toml")) {
+		t.Fatal("outside-HOME ancestor was mounted")
 	}
-	// Both are reproduced at their absolute paths inside the container.
-	for _, want := range []string{
-		"cp /host/mise-config/0 " + filepath.ToSlash(filepath.Join(work, "mise.toml")),
-		"cp /host/mise-config/1 " + filepath.ToSlash(filepath.Join(project, "mise.toml")),
-	} {
-		if !strings.Contains(plan.Script, want) {
-			t.Errorf("script missing %q:\n%s", want, plan.Script)
-		}
+	if !strings.Contains(plan.Script, "cp /host/mise-config/0 "+filepath.ToSlash(filepath.Join(project, "mise.toml"))) {
+		t.Fatal("root config not copied")
 	}
 	if !strings.Contains(args, "MPACK_CONTAINER_PROJECT="+filepath.ToSlash(project)) {
 		t.Errorf("the project path should be mirrored absolutely:\n%s", args)

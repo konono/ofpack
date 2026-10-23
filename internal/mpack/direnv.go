@@ -32,12 +32,20 @@ type DirenvPlan struct {
 	// DirenvInstalled reports whether direnv is on PATH. It is an optional
 	// prerequisite, not something mpack ships.
 	DirenvInstalled bool
+	// ScopePath is the selected project-relative mise scope ("." for root).
+	ScopePath string
 }
 
 // PlanDirenv resolves the destination and the .envrc line for project. dest
 // may be empty, in which case the conventional location inside the project is
 // used.
 func PlanDirenv(project, dest string) (*DirenvPlan, error) {
+	return PlanDirenvWithRoot(project, dest, "")
+}
+
+// PlanDirenvWithRoot permits an explicit project root when the toolchain was
+// unpacked to a custom location rather than the project's .mpack directory.
+func PlanDirenvWithRoot(project, dest, explicitRoot string) (*DirenvPlan, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return nil, err
@@ -47,9 +55,16 @@ func PlanDirenv(project, dest string) (*DirenvPlan, error) {
 	}
 
 	if dest == "" {
-		dest = filepath.Join(project, MpackSubdir)
-		if _, err := os.Stat(dest); err != nil {
-			return nil, fmt.Errorf("no unpacked toolchain at %s: unpack an archive first, or point at one with --dest DIR", dest)
+		// Child projects share the archive unpacked at the selected root.
+		for dir := project; ; dir = filepath.Dir(dir) {
+			candidate := filepath.Join(dir, MpackSubdir)
+			if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+				dest = candidate
+				break
+			}
+			if filepath.Dir(dir) == dir {
+				return nil, fmt.Errorf("no unpacked toolchain at %s or its project ancestors: unpack an archive first, or point at one with --dest DIR", filepath.Join(project, MpackSubdir))
+			}
 		}
 	}
 	dest, err = filepath.Abs(dest)
@@ -59,13 +74,51 @@ func PlanDirenv(project, dest string) (*DirenvPlan, error) {
 	if err := checkUnpackedTree(dest); err != nil {
 		return nil, err
 	}
+	m, err := readScopedInstalledManifest(dest)
+	if err != nil {
+		return nil, err
+	}
+	scopePath := "."
+	projectRoot := ""
+	if m.Schema == SchemaVersionScoped {
+		if explicitRoot != "" {
+			projectRoot, err = filepath.Abs(explicitRoot)
+			if err != nil {
+				return nil, err
+			}
+		} else if filepath.Base(dest) == MpackSubdir {
+			projectRoot = filepath.Dir(dest)
+		} else if m.HomeRelativeProjectPath != "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				projectRoot = filepath.Join(home, filepath.FromSlash(m.HomeRelativeProjectPath))
+			}
+		}
+		if projectRoot == "" {
+			return nil, fmt.Errorf("cannot identify the project root for scoped toolchain %s; pass --project-root DIR", dest)
+		}
+		rel, ok := RelUnder(projectRoot, project)
+		if !ok {
+			return nil, fmt.Errorf("project %s is outside the scoped archive root %s", project, projectRoot)
+		}
+		scopePath = selectedScopePath(m.Scopes, filepath.ToSlash(rel))
+	}
 
 	// A destination inside the project is referred to relatively, so the
 	// .envrc keeps working if the project is moved or cloned elsewhere.
-	target := filepath.Join(dest, DirenvName)
+	sourceName := DirenvName
+	if scopePath != "." {
+		sourceName = scopeDirenvName(scopePath)
+	}
+	target := filepath.Join(dest, filepath.FromSlash(sourceName))
 	ref := target
 	if rel, ok := RelUnder(project, dest); ok && rel != "." {
-		ref = rel + "/" + DirenvName
+		ref = filepath.ToSlash(filepath.Join(rel, filepath.FromSlash(sourceName)))
+	} else if rel, ok := RelUnder(project, target); ok {
+		ref = filepath.ToSlash(rel)
+	} else if m.Schema == SchemaVersionScoped && filepath.Base(dest) == MpackSubdir && projectRoot == filepath.Dir(dest) {
+		if rel, err := filepath.Rel(project, target); err == nil {
+			ref = filepath.ToSlash(rel)
+		}
 	}
 
 	envrc := filepath.Join(project, EnvrcName)
@@ -79,7 +132,36 @@ func PlanDirenv(project, dest string) (*DirenvPlan, error) {
 		EnvrcPath:       envrc,
 		EnvrcExists:     statErr == nil,
 		DirenvInstalled: lookErr == nil,
+		ScopePath:       scopePath,
 	}, nil
+}
+
+func readScopedInstalledManifest(dest string) (*Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(dest, InstalledManifestName))
+	if err != nil {
+		return nil, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing installed manifest: %w", err)
+	}
+	if err := checkSchema(m.Schema); err != nil {
+		return nil, err
+	}
+	if err := validateScopedManifest(&m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func selectedScopePath(scopes []Scope, rel string) string {
+	selected := "."
+	for _, scope := range scopes {
+		if scope.Path != "." && (rel == scope.Path || strings.HasPrefix(rel, scope.Path+"/")) && len(scope.Path) > len(selected) {
+			selected = scope.Path
+		}
+	}
+	return selected
 }
 
 // checkUnpackedTree makes sure dest really is an unpacked archive, so that a
@@ -155,11 +237,16 @@ shell (for example: eval "$(direnv hook zsh)" in ~/.zshrc), then run:
 // leave the user with an .envrc, an invitation to run `direnv allow`, and a
 // toolchain that is not the one they packed.
 func InitDirenv(project, dest string) (plan *DirenvPlan, check *SnapshotCheck, wrote bool, err error) {
-	plan, err = PlanDirenv(project, dest)
+	return InitDirenvWithRoot(project, dest, "")
+}
+
+// InitDirenvWithRoot is InitDirenv with an explicit root for custom --dest.
+func InitDirenvWithRoot(project, dest, projectRoot string) (plan *DirenvPlan, check *SnapshotCheck, wrote bool, err error) {
+	plan, err = PlanDirenvWithRoot(project, dest, projectRoot)
 	if err != nil {
 		return nil, nil, false, err
 	}
-	check, err = CheckSnapshot(plan.Dest)
+	check, err = CheckSnapshotScope(plan.Dest, plan.ScopePath)
 	if err != nil {
 		return plan, nil, false, fmt.Errorf("could not verify the environment %s would produce: %w\n"+
 			"Nothing was written. Fix the unpacked tree, or source %s by hand",
@@ -206,14 +293,32 @@ var systemConfigPaths = []string{"/etc/mise/config.toml", "/etc/mise/mise.toml",
 // every config mise might read is not something that can be asserted in the
 // abstract, so it is measured here instead.
 func CheckSnapshot(dest string) (*SnapshotCheck, error) {
-	manifestPath := filepath.Join(dest, InstalledManifestName)
-	data, err := os.ReadFile(manifestPath)
+	return CheckSnapshotScope(dest, ".")
+}
+
+// CheckSnapshotScope verifies the environment selected for one directory.
+func CheckSnapshotScope(dest, scopePath string) (*SnapshotCheck, error) {
+	m, err := readScopedInstalledManifest(dest)
 	if err != nil {
 		return nil, err
 	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", manifestPath, err)
+	wantTools := m.Tools
+	configDir := filepath.Join(dest, "config")
+	if m.Schema == SchemaVersionScoped {
+		found := false
+		for _, scope := range m.Scopes {
+			if scope.Path == scopePath {
+				wantTools = scope.Tools
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("scope %q is absent from the archive", scopePath)
+		}
+		if scopePath != "." {
+			configDir = filepath.Join(dest, filepath.FromSlash(filepath.Dir(scopeConfigName(scopePath))))
+		}
 	}
 
 	run := func(args ...string) ([]byte, error) {
@@ -223,8 +328,8 @@ func CheckSnapshot(dest string) (*SnapshotCheck, error) {
 		// is inherited, and the global config file is pinned.
 		cmd.Env = append(scrubbedEnv(),
 			"MISE_DATA_DIR="+dest,
-			"MISE_CONFIG_DIR="+filepath.Join(dest, "config"),
-			"MISE_GLOBAL_CONFIG_FILE="+filepath.Join(dest, "config", "config.toml"),
+			"MISE_CONFIG_DIR="+configDir,
+			"MISE_GLOBAL_CONFIG_FILE="+filepath.Join(configDir, "config.toml"),
 			"MISE_OFFLINE=1",
 		)
 		return cmd.Output()
@@ -252,7 +357,7 @@ func CheckSnapshot(dest string) (*SnapshotCheck, error) {
 	}
 
 	want := map[string]bool{}
-	for _, t := range m.Tools {
+	for _, t := range wantTools {
 		want[t.Name+"@"+t.Version] = true
 	}
 	got := map[string]bool{}

@@ -2,10 +2,10 @@
 
 Carry a [mise](https://mise.jdx.dev/) toolchain to a disconnected machine.
 
-`mpack pack` collects the mise tools that are active in a directory — the
-merged result of your global and local mise configuration — together with the
-mise binary itself, into one `.tar.gz`. `mpack unpack` restores them on the
-other side with no network access at all.
+`mpack pack` collects active mise tools from your global configuration and
+the selected project directory **and its descendants**. It carries each
+directory's version selection, the installed binaries, and mise itself in one
+`.tar.gz`. `mpack unpack` restores them without network access.
 
 Built with the Go standard library only.
 
@@ -160,6 +160,15 @@ unpacked tree:
 source_env '.mpack/direnv.envrc'
 ```
 
+For a child directory with its own mise configuration, run `mpack direnv init`
+there too. It finds the root project's `.mpack`, then points that child's
+`.envrc` at its own exact-version selection. A directory without a separate
+mise config inherits the nearest selected scope. For example, if the root has
+Go 1.25 and `app/mise.toml` selects Go 1.26, the archive contains both
+versions; `cd root` selects 1.25 and `cd root/app` selects 1.26 after each
+directory has been initialized with direnv. The root `activate.sh` selects
+the root snapshot for manual use; it does not switch child scopes on `cd`.
+
 If the project **already has an `.envrc`, mpack does not touch it** — it
 prints the line for you to add where you want it. A destination outside the
 project is referenced by absolute path, quoted, so paths with spaces work;
@@ -246,7 +255,7 @@ mpack pack -C ~/work/myapp            # pack another directory without cd
 
 | included | excluded |
 | --- | --- |
-| the install directory of every installed **and active** tool | tools that are installed but not active here |
+| the install directory of every tool active in the selected root or a descendant scope | tools installed but inactive in every selected scope |
 | `installs/.mise` (mise's install catalog, not a cache) | `downloads/`, `http-tarballs/`, `cache/`, `shims/` |
 | the mise binary, with symlinks resolved to the real file | anything outside the mise installs root |
 | an mpack for the target, as `bin/mpack` | — |
@@ -258,10 +267,19 @@ relative to your home directory, config sources and symlink targets as `~/...`,
 and anything outside your home is omitted rather than written down. Ownership
 is not recorded either.
 
-`mise ls --current --json` decides what is active, so the archive captures the
-same merged global + local state you see in that directory. The generated
-config pins every tool to an exact version, so nothing has to be resolved — and
-therefore nothing has to be downloaded — on the other side.
+`mise ls --current --json` decides what is active in each scope. The selected
+root (`cwd` or `-C`) is a boundary: global configuration applies, but local
+mise files above that root are excluded. Its descendants are included. Two
+different versions of one tool are both stored under
+`installs/<tool>/<version>`; generated configs pin the exact selection for
+the root and each child scope. `pyproject.toml` has no effect unless
+`--uv-project` is specified.
+
+For `mpack pack -C P`, a global mise config (G) and `P/mise.toml` apply at
+`P`. `P/app/mise.toml` adds or overrides selections for `P/app` and below.
+A `mise.toml` in the directory above `P` is ignored. If both scopes select
+different Go versions, both are packed; the root and child configs select
+their own version after unpacking.
 
 The mise binary is dereferenced before archiving: a Homebrew `mise` is a symlink
 into the Cellar, and archiving the link would produce a dangling file.
@@ -387,18 +405,11 @@ container and never reach this machine — not the manifest, not the temporary
 payload, not memory. Version precedence comes from `mise bin-paths`, which
 carries no values at all.
 
-Inside the container mpack mirrors your project's path, copies *only* mise's
-own config files into it (`mise.toml`, `.tool-versions`, and friends — never
-your source), and merges your global mise config.
-
-mise reads config from parent directories as well, so the config files of
-every directory above the project are carried too, each at its mirrored
-location: `~/work/mise.toml` still applies to `~/work/myapp`. For a project
-outside your home directory the walk goes up to the filesystem root and the
-paths are reproduced as they are, so `/work/mise.toml` still applies to
-`/work/myapp` (where the Podman machine shares that path). A project with no
-config of its own, relying entirely on your global mise config, packs fine;
-only having no configuration at all is an error.
+Inside the container mpack copies *only* mise config files from the selected
+root and its descendants (`mise.toml`, `.tool-versions`, and friends), plus
+your global mise config. It installs and records the effective selection in
+each scope. Local config above the selected root is excluded. A root relying
+only on global config still packs; no configuration anywhere is an error.
 
 ### glibc compatibility
 
@@ -519,6 +530,55 @@ on the other side — the target's Python, the target's uv, and every wheel the
 project's dependencies need — and `mpack uv restore` assembles the
 environment there, offline.
 
+### Which Python is packed
+
+In `--uv-project` mode, the Python selector comes from, in order:
+
+1. `--python X.Y`, when given;
+2. `[tools].python` in `mise.toml` along the path from the selected root to
+   the directory containing `pyproject.toml`; a nearer file wins. Files above
+   the selected root and in unrelated siblings are ignored. If it says
+   `latest` and `requires-python` has a lower bound, mpack chooses that
+   lowest allowed minor;
+3. the lower bound of `pyproject.toml`'s `requires-python`;
+4. global mise Python, only when the project supplies neither a scoped
+   selector nor a Python lower bound.
+
+`requires-python` is always a compatibility constraint when present: the
+Python actually installed for the target is checked against it. The package
+resolver then checks the dependencies. A broad lower bound like `>=3.8`
+selects Python 3.8 when no scoped selector overrides it; if dependencies
+require a newer interpreter, pack stops and asks you to choose one. If no
+selector or lower bound exists, mpack uses global Python if available, or
+asks for `--python`. If `requires-python` is absent, a scoped or global mise
+selector or `--python` still works.
+
+For example, `mise.toml` can request `python = "latest"` while pyproject
+declares `requires-python = ">=3.11"`. mpack selects Python 3.11, then
+checks whether the project dependencies can be downloaded and installed for
+that Python. If they cannot, pack fails before writing an archive. A conflicting
+range such as `>=3.12,<3.12` also fails before downloading. To choose a newer
+minor explicitly, use:
+
+```sh
+mpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
+```
+
+If `requires-python` has no lower bound, `latest` retains its normal mise
+meaning and resolves on the target. The pack still checks the resolved
+version against `requires-python` and verifies the wheel closure offline.
+
+The container has an isolated mise configuration containing only Python and
+uv. Scoped or global mise files only help **select Python**; their other
+tools and settings are not installed. mpack verifies the resulting wheels
+in a container without network access before writing the archive.
+
+`-C` (or cwd) sets a search root. mpack looks below it for exactly one
+`pyproject.toml`, skipping generated directories such as `.venv`, `.mpack`
+and `node_modules`. Zero or multiple matches stop with an error; use `-C`
+to select the intended Python project. The archive's default destination
+follows the directory containing that `pyproject.toml`.
+
 ```sh
 cd ~/work/myapp
 mpack pack --uv-project --target linux/amd64 -o myapp.tar.gz
@@ -526,13 +586,14 @@ mpack pack --uv-project --target linux/amd64 -o myapp.tar.gz
 
 ```
 Packing the Python environment for /Users/you/work/myapp, built for linux/amd64.
-  python 3.12, dependencies from pyproject.toml:
+  python 3.12 (selected by pyproject.toml requires-python lower bound); dependencies from pyproject.toml:
     ansible-core>=2.17,<3.0
     ansible>=10.0
     kubernetes>=29.0
     jmespath>=1.0
   uv.lock pins 32 package(s) exactly
-  the project's own files are not packed, and only pyproject.toml, uv.lock and
+  other mise tools are ignored in --uv-project mode
+  the project's own files are not packed; only pyproject.toml, uv.lock and
   requirements.txt were read
 
 --- downloading wheels ---
@@ -568,8 +629,10 @@ Python, uv, and wheels all come out of the archive, and `uv restore` creates
 
 ### What is read, and what is not
 
-Only three files in the project are opened: `pyproject.toml`, and `uv.lock`
-and `requirements.txt` if they exist. Nothing else — not `.credentials`, not
+The dependency files opened are `pyproject.toml`, and `uv.lock` and
+`requirements.txt` if they exist. When `--python` is omitted, mise files
+from the selected root to the Python project may be read for `[tools].python`
+only; global mise configuration is a final fallback. Nothing else — not `.credentials`, not
 `.generated-passwords.yml`, not `.envrc`, not inventories or roles — is read,
 and none of the project's own files are packed. `.envrc` is left exactly as
 it is.
@@ -593,8 +656,9 @@ into the wheels that end up in the archive.
 ### Isolation from your own mise setup
 
 The container writes its own mise configuration listing only Python and uv.
-Your global configuration is not consulted, so a machine with twenty other
-tools and unrelocatable symlinks in them packs a clean two-tool environment.
+Your global configuration may supply a Python selector as a final fallback;
+its other tools are not installed, so a machine with twenty other tools and
+unrelocatable symlinks in them packs a clean two-tool environment.
 The ordinary `mpack pack` is unaffected; `--uv-project` is a separate, opt-in
 path.
 

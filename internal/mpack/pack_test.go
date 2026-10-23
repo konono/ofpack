@@ -331,6 +331,7 @@ func fakeMise(t *testing.T, installsRoot string, envJSON string, envFails bool, 
 	script := fmt.Sprintf(`#!/bin/sh
 case "$1 $2" in
   "--version ") echo "9.9.9 test" ;;
+  "config ls") echo '[]' ;;
   "ls --current") printf '%%s' %s ;;
   "env --json") %s ;;
   *) exit 1 ;;
@@ -403,10 +404,10 @@ func TestPackKeepsPathOrderForMultiVersionTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.Manifest.Tools[0].Version; got != "24.16.0" {
+	if got := plan.Manifest.Scopes[0].Tools[0].Version; got != "24.16.0" {
 		t.Fatalf("first version = %s, want 24.16.0", got)
 	}
-	if got := string(RenderConfig(plan.Manifest.Tools)); !strings.Contains(got, `["24.16.0", "22.22.2"]`) {
+	if got := string(RenderConfig(plan.Manifest.Scopes[0].Tools)); !strings.Contains(got, `["24.16.0", "22.22.2"]`) {
 		t.Fatalf("generated config lost the PATH order:\n%s", got)
 	}
 }

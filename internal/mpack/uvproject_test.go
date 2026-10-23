@@ -209,7 +209,8 @@ func TestPythonSatisfiesRequiresPython(t *testing.T) {
 		ok             bool
 	}{
 		{"3.12", ">=3.12,<3.13", true},
-		{"3.13", ">=3.12,<3.13", false}, // the upper bound excludes it
+		{"3.13", ">=3.12,<3.13", false},   // the upper bound excludes it
+		{"3.14.0", ">=3.12,<3.13", false}, // a target-resolved latest must be checked too
 		{"3.11", ">=3.12,<3.13", false},
 		{"3.12", "==3.12.*", true},
 		{"3.13", "==3.12.*", false},
@@ -224,6 +225,77 @@ func TestPythonSatisfiesRequiresPython(t *testing.T) {
 		if got != c.ok {
 			t.Errorf("PythonSatisfies(%q, %q) = %v (%s), want %v", c.spec, c.requires, got, why, c.ok)
 		}
+	}
+}
+
+func TestPythonFloorForLatest(t *testing.T) {
+	for _, tc := range []struct{ requires, want string }{
+		{">= 3.11", "3.11"},
+		{">=3.8,>=3.11,<3.13", "3.11"},
+		{">3.11,<3.13", "3.12"},
+		{"", ""},
+		{"<3.13", ""},
+	} {
+		got, err := PythonFloorForLatest(tc.requires)
+		if err != nil || got != tc.want {
+			t.Errorf("PythonFloorForLatest(%q) = %q, %v; want %q", tc.requires, got, err, tc.want)
+		}
+	}
+	if _, err := PythonFloorForLatest(">=3.12,<3.12"); err == nil || !strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("contradictory range should fail before installation: %v", err)
+	}
+}
+
+func TestProjectMisePythonReadsLocalSelector(t *testing.T) {
+	dir := writeProject(t, map[string]string{
+		"mise.toml": "[tools]\npython = \"latest\" # target resolves it\nnode = \"22\"\n[env]\nTOKEN = \"synthetic-secret\"\n",
+	})
+	selector, read, err := ProjectMisePython(dir)
+	if err != nil || !read || selector != "latest" {
+		t.Fatalf("project mise Python = %q, read %v, error %v; want latest", selector, read, err)
+	}
+	if strings.Contains(selector, "synthetic-secret") {
+		t.Fatal("an unrelated mise setting leaked into the Python selector")
+	}
+	if selector, read, err := ProjectMisePython(t.TempDir()); err != nil || read || selector != "" {
+		t.Fatalf("missing mise.toml = %q, read %v, error %v", selector, read, err)
+	}
+}
+
+func TestProjectMisePythonIgnoresParent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "course", "materials", "ansible_lab")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parentConfig := filepath.Join(home, "course", "mise.toml")
+	if err := os.WriteFile(parentConfig, []byte("[tools]\npython = \"latest\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, read, err := ProjectMisePython(project); err != nil || read || got != "" {
+		t.Fatalf("parent selection should be ignored: %q, read=%v, err=%v", got, read, err)
+	}
+	localConfig := filepath.Join(project, "mise.toml")
+	if err := os.WriteFile(localConfig, []byte("[tools]\nnode = \"22\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, read, err := ProjectMisePython(project); err != nil || !read || got != "" {
+		t.Fatalf("local mise.toml without Python should not inherit the parent: %q, read=%v, err=%v", got, read, err)
+	}
+	if err := os.WriteFile(localConfig, []byte("[tools]\npython = \"3.12\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, read, err := ProjectMisePython(project); err != nil || !read || got != "3.12" {
+		t.Fatalf("local selection = %q, read=%v, err=%v; want 3.12", got, read, err)
+	}
+}
+
+func TestProjectMisePythonRefusesAnAmbiguousToolValue(t *testing.T) {
+	dir := writeProject(t, map[string]string{"mise.toml": "[tools]\npython = [\"3.12\", \"3.13\"]\n"})
+	_, _, err := ProjectMisePython(dir)
+	if err == nil || !strings.Contains(err.Error(), "--python") {
+		t.Fatalf("ambiguous [tools].python should require an explicit choice: %v", err)
 	}
 }
 
@@ -247,6 +319,132 @@ func TestPythonSpecRefusesToGuess(t *testing.T) {
 		}
 		if err != nil && !strings.Contains(err.Error(), "--python") {
 			t.Errorf("the error should point at --python: %v", err)
+		}
+	}
+}
+
+func TestPythonSpecUsesBroadLowerBound(t *testing.T) {
+	for _, tc := range []struct{ requires, want string }{
+		{">=3.8", "3.8"}, {">=3.12,<3.14", "3.12"}, {">=3.8,!=3.9,<3.11", "3.8"},
+	} {
+		dir := writeProject(t, map[string]string{projectFiles.Pyproject: "[project]\nname=\"x\"\nversion=\"1\"\nrequires-python=\"" + tc.requires + "\"\ndependencies=[\"dep\"]\n"})
+		s, err := ReadUVProject(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := PythonSpecFor(s)
+		if err != nil || got != tc.want {
+			t.Errorf("%q: got %q, %v; want %q", tc.requires, got, err, tc.want)
+		}
+	}
+}
+
+func TestFindUVProjectSelectsOneAndRejectsAmbiguity(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindUVProject(root); err == nil {
+		t.Fatal("missing pyproject was accepted")
+	}
+	if err := os.WriteFile(filepath.Join(project, "pyproject.toml"), []byte("[project]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, skip := range []string{".venv", ".git", "node_modules", ".mpack"} {
+		dir := filepath.Join(root, skip)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(project, filepath.Join(root, "linked-app")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindUVProject(root); err != nil || got != project {
+		t.Fatalf("got %s, %v; want %s", got, err, project)
+	}
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "pyproject.toml"), []byte("[project]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindUVProject(root); err == nil || !strings.Contains(err.Error(), "multiple pyproject.toml") {
+		t.Fatalf("multiple projects were accepted: %v", err)
+	}
+}
+
+func TestScopedMisePythonStopsAtRootAndChildOverrides(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "scope")
+	child := filepath.Join(root, "app")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for file, body := range map[string]string{
+		filepath.Join(parent, "mise.toml"): "[tools]\npython=\"3.10\"\n",
+		filepath.Join(root, "mise.toml"):   "[tools]\npython=\"3.11\"\n",
+		filepath.Join(child, "mise.toml"):  "[tools]\npython=\"3.12\"\n",
+	} {
+		if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _, err := ScopedMisePython(root, child); err != nil || got != "3.12" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(child, "mise.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _, err := ScopedMisePython(root, child); err != nil || got != "3.11" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(root, "mise.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _, err := ScopedMisePython(root, child); err != nil || got != "" {
+		t.Fatalf("parent above root leaked: %q, %v", got, err)
+	}
+}
+
+func TestGlobalMisePythonUsesConfiguredFileAndOnlyPython(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MISE_CONFIG_DIR", dir)
+	t.Setenv("MISE_GLOBAL_CONFIG_FILE", "")
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[tools]\nnode=\"22\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mise.toml"), []byte("[tools]\npython=\"3.12\"\n[env]\nTOKEN=\"synthetic-secret\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, source, err := GlobalMisePython()
+	if err != nil || got != "3.12" || !strings.HasSuffix(source, "mise.toml") {
+		t.Fatalf("got %q from %q, %v", got, source, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "explicit.toml"), []byte("[tools]\npython=\"3.11\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MISE_GLOBAL_CONFIG_FILE", filepath.Join(dir, "explicit.toml"))
+	got, source, err = GlobalMisePython()
+	if err != nil || got != "3.11" || !strings.HasSuffix(source, "explicit.toml") {
+		t.Fatalf("explicit override: got %q from %q, %v", got, source, err)
+	}
+}
+
+func TestPythonSpecAcceptsOnlyOneMinorRanges(t *testing.T) {
+	for _, requires := range []string{">=3.12,<3.13", "==3.12.*", "~=3.12.0", ">=3.12,<=3.12"} {
+		body := "[project]\nname = \"x\"\nversion = \"1\"\nrequires-python = \"" + requires + "\"\ndependencies = [\"dep\"]\n"
+		project := writeProject(t, map[string]string{projectFiles.Pyproject: body})
+		source, err := ReadUVProject(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := PythonSpecFor(source); err != nil || got != "3.12" {
+			t.Errorf("requires-python = %q chose %q, %v; want 3.12", requires, got, err)
 		}
 	}
 }
@@ -519,7 +717,7 @@ func TestUVArchiveDeclaresANewerSchema(t *testing.T) {
 		t.Errorf("schema %d should still be readable: %v", SchemaVersion, err)
 	}
 	// A future layout is refused rather than partially unpacked.
-	err = checkSchema(SchemaVersionUV + 1)
+	err = checkSchema(SchemaVersionScoped + 1)
 	if err == nil || !strings.Contains(err.Error(), "silently leave parts out") {
 		t.Errorf("an unknown schema should be refused with an explanation, got %v", err)
 	}

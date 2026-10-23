@@ -19,11 +19,11 @@ var version = "dev"
 const usage = `mpack - carry a mise toolchain to a disconnected machine
 
 Usage:
-  mpack pack    [flags]            Pack the mise tools active in this directory
+  mpack pack    [flags]            Pack global plus this directory and descendant mise scopes
   mpack unpack  -f ARCHIVE [flags] Unpack an archive (no network needed)
   mpack inspect -f ARCHIVE         Show what an archive contains
   mpack env     --dest DIR         Print the shell setup for an unpacked tree
-  mpack direnv  init [--dest DIR]  Hook a project up to direnv for automatic switching
+  mpack direnv  init [flags]       Hook a directory up to its packed mise scope
   mpack uv      restore            Build a packed Python project's .venv, offline
   mpack version
 
@@ -61,6 +61,17 @@ too, so the archive is still the only file to copy:
   cd ~/work/myapp
   mpack pack --target linux/amd64 -o myapp.linux-amd64.mpack.tar.gz
   scp myapp.linux-amd64.mpack.tar.gz user@host:~/
+
+Plain pack includes active tools from global configuration, this directory,
+and descendant mise scopes. Local configuration above this directory is
+excluded. Different versions of one tool are carried separately.
+
+For a Python project, --uv-project finds exactly one pyproject.toml below
+this directory and carries Python, uv and wheels. Python selection is:
+--python, then mise.toml from this directory to the Python project (nearest
+wins), then the requires-python lower bound, then global mise Python. A
+selector that conflicts with requires-python is rejected:
+  mpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
 
 Run "mpack <command> -h" for the flags of a command.
 `
@@ -108,9 +119,10 @@ func cmdPack(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `Usage: mpack pack [flags]
 
-Packs every mise tool that is installed and active in the working directory,
-i.e. the merged result of your global and local mise configuration, together
-with the mise binary itself and an mpack for the target platform.
+Packs every installed tool active in the global configuration, the selected
+directory and its descendants. Local mise files above the selected directory
+are excluded. Each directory's tool version selection is preserved, together
+with mise and an mpack for the target platform.
 
   cd /work/myapp && mpack pack -o myapp.mpack.tar.gz
 
@@ -119,7 +131,7 @@ Flags:
 		fs.PrintDefaults()
 	}
 	out := fs.String("o", "", "output archive (default \"<directory name>.mpack.tar.gz\")")
-	dir := fs.String("C", "", "pack the tools active in this directory instead of the current one")
+	dir := fs.String("C", "", "selected root for tool scopes or the pyproject.toml search (default: cwd)")
 	var exclude stringList
 	fs.Var(&exclude, "exclude", "mise tool name to leave out (repeatable)")
 	allowUnresolved := fs.Bool("allow-unresolved", false, "pack even if some symlinks cannot be relocated (they will be missing on the target)")
@@ -131,7 +143,7 @@ Flags:
 	mpackBin := fs.String("mpack-bin", "", "use this prebuilt mpack as the bundled unpacker instead of building one")
 	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+mpack.UnpackerName+"; the target will need its own mpack")
 	uvProject := fs.Bool("uv-project", false, "pack a uv Python project: the target's Python, uv and a wheel closure, instead of this machine's mise tools")
-	pythonSpec := fs.String("python", "", "Python X.Y for --uv-project (default: derived from requires-python; required when that states no installable version). A version given here must satisfy requires-python")
+	pythonSpec := fs.String("python", "", "Python X.Y for --uv-project (overrides the project's own mise.toml; latest there uses the requires-python lower bound when present). Must satisfy requires-python")
 	printCommand := fs.Bool("print-command", false, "with --target, print the tool-installation container command (which streams a payload, not a finished archive) instead of running it")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -456,6 +468,9 @@ Flags:
 	}
 	fmt.Fprintf(os.Stderr, "Installed mise %s and %d tool(s).\n\nNext:\n  source %s/activate.sh\n  mise ls --current\n",
 		m.MiseVersion, len(m.Tools), absDest)
+	if len(m.Scopes) > 1 {
+		fmt.Fprintln(os.Stderr, "For child directories, run 'mpack direnv init' there to select their packed versions.")
+	}
 	if len(m.EnvVarNames) > 0 {
 		fmt.Fprintf(os.Stderr, "\nThe source configuration also set these env vars, which mpack does not carry\n(their values may be secrets) - set them yourself if the tools need them:\n  %s\n",
 			strings.Join(m.EnvVarNames, ", "))
@@ -498,6 +513,19 @@ func cmdInspect(args []string) error {
 	for _, t := range m.Tools {
 		fmt.Printf("  %-28s %-14s (%s)\n", t.Name, t.Version, t.RelPath)
 	}
+	if len(m.Scopes) > 0 {
+		fmt.Printf("directory scopes (%d):\n", len(m.Scopes))
+		for _, scope := range m.Scopes {
+			fmt.Printf("  %s:", scope.Path)
+			if len(scope.Tools) == 0 {
+				fmt.Print(" (no tools)")
+			}
+			for _, tool := range scope.Tools {
+				fmt.Printf(" %s@%s", tool.Name, tool.Version)
+			}
+			fmt.Println()
+		}
+	}
 	if len(m.EnvVarNames) > 0 {
 		fmt.Printf("env var names (values not carried): %s\n", strings.Join(m.EnvVarNames, ", "))
 	}
@@ -538,11 +566,11 @@ func cmdEnv(args []string) error {
 
 func cmdDirenv(args []string) error {
 	if len(args) == 0 || args[0] != "init" {
-		return fmt.Errorf("usage: mpack direnv init [--dest DIR]")
+		return fmt.Errorf("usage: mpack direnv init [--dest DIR] [--project-root DIR]")
 	}
 	fs := flag.NewFlagSet("direnv init", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: mpack direnv init [--dest DIR]
+		fmt.Fprint(fs.Output(), `Usage: mpack direnv init [--dest DIR] [--project-root DIR]
 
 Hooks the project in the current directory up to direnv, so its toolchain is
 on PATH inside the directory and gone again when you leave. Run it from the
@@ -562,6 +590,7 @@ Flags:
 		fs.PrintDefaults()
 	}
 	dest := fs.String("dest", "", "the unpacked mpack directory (default: ./"+mpack.MpackSubdir+")")
+	projectRoot := fs.String("project-root", "", "root directory originally packed, when a custom --dest is outside the project tree")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -569,7 +598,7 @@ Flags:
 	if err != nil {
 		return err
 	}
-	plan, check, wrote, err := mpack.InitDirenv(cwd, *dest)
+	plan, check, wrote, err := mpack.InitDirenvWithRoot(cwd, *dest, *projectRoot)
 	if err != nil {
 		return err
 	}

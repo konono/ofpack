@@ -217,6 +217,9 @@ func TestBuildPlanFromPayloadKeepsVersionPrecedence(t *testing.T) {
 	if cfg := string(RenderConfig(plan.Manifest.Tools)); !strings.Contains(cfg, `["24.16.0", "22.22.2"]`) {
 		t.Fatalf("precedence lost:\n%s", cfg)
 	}
+	if _, err := BuildPlanFromPayload(payload, "linux/amd64", PackOptions{WorkDir: t.TempDir(), Exclude: []string{"node"}}); err == nil || !strings.Contains(err.Error(), "nothing to pack") {
+		t.Fatalf("--exclude node must remove both versions, got %v", err)
+	}
 }
 
 func TestPayloadRejectsHostileEntryNames(t *testing.T) {
