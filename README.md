@@ -87,7 +87,8 @@ The destination directory *is* `MISE_DATA_DIR`:
 
 ```
 ~/work/myapp/.mpack/
-├── activate.sh            sourceable shell setup
+├── activate.sh            sourceable shell setup (manual use)
+├── direnv.envrc           sourced from a project .envrc (direnv use)
 ├── bin/mise               the mise executable
 ├── config/config.toml     generated global config, exact versions
 ├── installs/...           the tool trees
@@ -122,9 +123,117 @@ eval "$(~/work/myapp/.mpack/bin/mise activate fish)"
 
 `mpack env --dest DIR` prints the same snippet for an already unpacked tree.
 
+### Automatic switching with direnv
+
+Sourcing by hand is fine for one project. With [direnv](https://direnv.net/)
+the toolchain can instead appear when you enter the directory and disappear
+when you leave, which is what makes several unpacked projects usable side by
+side. direnv is an **optional prerequisite** — mpack does not bundle it, and
+everything above works without it.
+
+Set up direnv's hook once, in your shell's rc file:
+
+```sh
+eval "$(direnv hook zsh)"     # ~/.zshrc
+eval "$(direnv hook bash)"    # ~/.bashrc
+```
+
+fish uses its own syntax, in `~/.config/fish/config.fish`:
+
+```fish
+direnv hook fish | source
+```
+
+Then, per project:
+
+```sh
+cd ~/work/myapp
+mpack direnv init
+direnv allow
+```
+
+`direnv init` checks the environment first and only writes if it matches the
+archive (see below); then it writes a one-line `.envrc` pointing at the
+unpacked tree:
+
+```sh
+source_env '.mpack/direnv.envrc'
+```
+
+If the project **already has an `.envrc`, mpack does not touch it** — it
+prints the line for you to add where you want it. A destination outside the
+project is referenced by absolute path, quoted, so paths with spaces work;
+one inside the project is relative. The generated `.mpack/direnv.envrc`
+derives its own location when direnv sources it rather than baking in the
+path it was written at, so moving or cloning the project keeps working.
+
+Now two projects can pin different versions and you just `cd`:
+
+```console
+$ cd ~/work/projA && go version
+go version go1.25.6 darwin/arm64
+$ cd ~/work/projB && go version
+go version go1.26.4 darwin/arm64
+$ cd ~ && go version
+go version go1.26.4 darwin/arm64      # whatever your machine had
+```
+
+`GOROOT` and the rest of the tool environment follow along, and leaving the
+directory restores exactly what you had before.
+
+**Do not also run `mise activate` in the same shell.** direnv and the mise
+hook would both be managing the same variables. The generated
+`.mpack/direnv.envrc` deliberately installs no mise hook of its own for the
+same reason: direnv evaluates it in a separate process and owns the enter and
+leave transitions. That is also why `activate.sh` is not what `.envrc`
+sources — it does install a hook, because it is the manual, no-direnv route.
+
+#### What the direnv environment is, exactly
+
+It is the **snapshot**, not a live mise setup. The generated file clears every
+inherited `MISE_*` variable, pins `MISE_DATA_DIR`, `MISE_CONFIG_DIR`,
+`MISE_GLOBAL_CONFIG_FILE` and `MISE_OFFLINE` to the unpacked tree, and
+evaluates mise with `-C /`.
+
+Each of those is load-bearing. An inherited `MISE_GLOBAL_CONFIG_FILE`
+overrides `MISE_CONFIG_DIR` outright — measured, not assumed — so a shell that
+already had one would otherwise load a different configuration entirely.
+`-C /` stops mise walking up from the project and reading the project's own
+`mise.toml` and its parents, which describe the machine the archive came from
+rather than what is unpacked here.
+
+**The limit:** config that mise reads regardless of those settings —
+`/etc/mise/config.toml` and a `/mise.toml` at the filesystem root — is not
+shut out. `MISE_CEILING_PATHS` did not prevent it in testing. Rather than
+claim an isolation that cannot be guaranteed, `mpack direnv init` *measures*
+it: it runs the bundled mise exactly as the generated file does and compares
+the result against the manifest, reporting anything extra or missing, and
+naming those system config files when they exist.
+
+The check runs both commands the generated file depends on — the tool listing
+*and* the environment itself — because a mise that lists tools happily but
+cannot build an environment would otherwise pass. It runs **before** anything
+is written. If the environment does not
+match, or cannot be verified, `direnv init` fails and creates no `.envrc` —
+an `.envrc` and an invitation to run `direnv allow` would otherwise lend
+approval to the wrong toolchain. A tool that mise lists but has not installed
+counts as missing, since it is not usable. A clean check is silent.
+
+The generated files refuse in the same way at load time: if mise cannot
+produce an environment, `.mpack/direnv.envrc` ends the evaluation so direnv
+applies nothing at all (rather than exporting what it had set so far and
+reporting success), and `activate.sh` returns non-zero without touching your
+shell further.
+
+A consequence worth knowing: editing the project's `mise.toml` afterwards does
+**not** change what direnv loads. It cannot — the tools it names are not in
+the archive. To go back to a live mise setup, remove the `.envrc` line and use
+`mise activate` as usual.
+
 ### Other commands
 
 ```sh
+mpack direnv init                     # hook this project up to direnv
 mpack inspect -f myapp.mpack.tar.gz   # tools, platform, symlink notes
 mpack pack --target linux/amd64       # pack for another OS (see below)
 mpack pack --no-unpacker              # leave bin/mpack out of the archive

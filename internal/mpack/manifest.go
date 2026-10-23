@@ -20,6 +20,10 @@ const (
 	// conflict checks and transaction as everything else.
 	ActivateName          = "activate.sh"
 	InstalledManifestName = "mpack-manifest.json"
+	// DirenvName is sourced from a project's .envrc. It sets the same
+	// environment as activate.sh but installs no shell hook, because direnv
+	// evaluates it in its own process and manages entering and leaving.
+	DirenvName = "direnv.envrc"
 	// CatalogDir is mise's own record of where things are installed. The mise
 	// docs describe installs/.mise as a catalog rather than a cache, so it is
 	// preserved along with the install trees.

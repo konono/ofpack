@@ -23,6 +23,7 @@ Usage:
   mpack unpack  -f ARCHIVE [flags] Unpack an archive (no network needed)
   mpack inspect -f ARCHIVE         Show what an archive contains
   mpack env     --dest DIR         Print the shell setup for an unpacked tree
+  mpack direnv  init [--dest DIR]  Hook a project up to direnv for automatic switching
   mpack version
 
 Typical flow:
@@ -41,6 +42,13 @@ Typical flow:
 
 Extracting into a temporary directory avoids overwriting a bin/mpack of your
 own; the same binary is installed under the destination for later use.
+
+For automatic switching between projects, use direnv instead of sourcing by
+hand (direnv is an optional prerequisite and is not bundled):
+  cd ~/work/myapp
+  mpack direnv init
+  direnv allow
+Do not also run "mise activate" in the same shell.
 
 A project outside your home directory has no default destination, so pass
 --dest when unpacking it:
@@ -71,6 +79,8 @@ func main() {
 		err = cmdInspect(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
+	case "direnv":
+		err = cmdDirenv(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("mpack", version)
 	case "help", "-h", "--help":
@@ -512,6 +522,50 @@ func cmdEnv(args []string) error {
 		return err
 	}
 	fmt.Print(mpack.ActivateScript(abs))
+	return nil
+}
+
+func cmdDirenv(args []string) error {
+	if len(args) == 0 || args[0] != "init" {
+		return fmt.Errorf("usage: mpack direnv init [--dest DIR]")
+	}
+	fs := flag.NewFlagSet("direnv init", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: mpack direnv init [--dest DIR]
+
+Hooks the project in the current directory up to direnv, so its toolchain is
+on PATH inside the directory and gone again when you leave. Run it from the
+project:
+
+  cd ~/work/myapp
+  mpack direnv init
+  direnv allow
+
+direnv is an optional prerequisite; mpack does not bundle it. Without it,
+source the unpacked activate.sh by hand instead.
+
+An existing .envrc is never modified: the line to add is printed instead.
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	dest := fs.String("dest", "", "the unpacked mpack directory (default: ./"+mpack.MpackSubdir+")")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	plan, check, wrote, err := mpack.InitDirenv(cwd, *dest)
+	if err != nil {
+		return err
+	}
+	fmt.Print(plan.Instructions(wrote))
+	if report := check.Report(); report != "" {
+		fmt.Fprintf(os.Stderr, "\n%s", report)
+	}
 	return nil
 }
 
