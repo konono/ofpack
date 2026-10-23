@@ -241,7 +241,7 @@ func uvProjectAt(t *testing.T, root string, files map[string]string, args ...str
 
 const uvTestPyproject = "[project]\nname = \"demo\"\nversion = \"0.1\"\nrequires-python = \">=3.10\"\ndependencies = [\"ansible>=9.5.1\"]\n"
 
-// TOML allows a quoted key and mise honours it - and mpack writes that form
+// TOML allows a quoted key and mise honours it - and ofpack writes that form
 // itself. Reading only the bare form meant the configuration was skipped and
 // a different Python was chosen with no warning.
 func TestUVPackReadsQuotedPythonKeyInMiseConfig(t *testing.T) {
@@ -255,7 +255,7 @@ func TestUVPackReadsQuotedPythonKeyInMiseConfig(t *testing.T) {
 			t.Fatalf("%s: %v\n%s", quoted, err, out)
 		}
 		if !strings.Contains(out, "python 3.13") {
-			t.Errorf("%s was not honoured; mpack reported:\n%s", quoted, out)
+			t.Errorf("%s was not honoured; ofpack reported:\n%s", quoted, out)
 		}
 		if strings.Contains(out, "requires-python lower bound") {
 			t.Errorf("%s was skipped and the choice fell through:\n%s", quoted, out)
@@ -264,7 +264,7 @@ func TestUVPackReadsQuotedPythonKeyInMiseConfig(t *testing.T) {
 }
 
 // DiscoverMiseScopes treats nine filenames as mise configuration. The Python
-// selection has to read the same ones, or a scope mpack packs is a scope it
+// selection has to read the same ones, or a scope ofpack packs is a scope it
 // cannot interpret.
 func TestUVPackReadsEveryMiseConfigFilename(t *testing.T) {
 	for _, name := range []string{
@@ -281,7 +281,7 @@ func TestUVPackReadsEveryMiseConfigFilename(t *testing.T) {
 			t.Fatalf("%s: %v\n%s", name, err, out)
 		}
 		if !strings.Contains(out, "python 3.13") {
-			t.Errorf("%s was not read; mpack reported:\n%s", name, out)
+			t.Errorf("%s was not read; ofpack reported:\n%s", name, out)
 		}
 	}
 	// .tool-versions is not TOML and needs its own reader.
@@ -332,11 +332,11 @@ func TestUVPackFollowsMiseConfigPrecedence(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if !strings.Contains(out, "python 3.13") {
-		t.Errorf(".mise.local.toml should win; mpack reported:\n%s", out)
+		t.Errorf(".mise.local.toml should win; ofpack reported:\n%s", out)
 	}
 }
 
-// A configuration that names a Python mpack cannot interpret must stop the
+// A configuration that names a Python ofpack cannot interpret must stop the
 // pack. Falling through to the next source would build the environment on a
 // different interpreter than the directory asks for, and that only shows up
 // on the disconnected machine.

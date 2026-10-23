@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -15,20 +15,20 @@ import (
 
 // A payload is the intermediate stream a container produces: the tools it
 // installed for the target platform, plus just enough metadata for this
-// machine to build the real archive from them. mpack itself never runs inside
-// the container, so no target-platform mpack binary is needed to pack.
+// machine to build the real archive from them. ofpack itself never runs inside
+// the container, so no target-platform ofpack binary is needed to pack.
 //
 // Layout (gzipped tar):
 //
-//	mpack-meta/tools.json         `mise ls --current --json` from the container
-//	mpack-meta/bin-paths.txt      `mise bin-paths`, for version precedence
-//	mpack-meta/env-names.txt      names only, one per line; never values
-//	mpack-meta/mise-version.txt
-//	mpack-meta/installs-root.txt  the installs root *inside the container*
+//	ofpack-meta/tools.json         `mise ls --current --json` from the container
+//	ofpack-meta/bin-paths.txt      `mise bin-paths`, for version precedence
+//	ofpack-meta/env-names.txt      names only, one per line; never values
+//	ofpack-meta/mise-version.txt
+//	ofpack-meta/installs-root.txt  the installs root *inside the container*
 //	bin/mise
 //	installs/<rel>/...
 const (
-	payloadMetaDir     = "mpack-meta"
+	payloadMetaDir     = "ofpack-meta"
 	payloadTools       = payloadMetaDir + "/tools.json"
 	payloadBinPaths    = payloadMetaDir + "/bin-paths.txt"
 	payloadEnvNames    = payloadMetaDir + "/env-names.txt"
@@ -355,7 +355,7 @@ status_file="$meta/.tar-status"
 } | gzip -1
 tar_status="$(cat "$status_file" 2>/dev/null || echo 1)"
 if [ "$tar_status" -ne 0 ]; then
-  echo "mpack: tar failed with status $tar_status while collecting the payload" >&2
+  echo "ofpack: tar failed with status $tar_status while collecting the payload" >&2
   exit "$tar_status"
 fi
 `

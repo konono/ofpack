@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ import (
 const DefaultCrossImage = "docker.io/library/debian:bookworm-slim"
 
 // SupportedTargets are the platforms a cross pack can produce. Each one is a
-// real Linux platform; mpack cannot build a macOS toolchain from Linux or vice
+// real Linux platform; ofpack cannot build a macOS toolchain from Linux or vice
 // versa, because that needs the target OS to run the installers.
 var SupportedTargets = []string{"linux/amd64", "linux/arm64"}
 
@@ -34,8 +34,8 @@ type CrossOptions struct {
 	// GlobalConfigDir is the host mise config directory to merge in. Empty
 	// means do not merge a global config.
 	GlobalConfigDir string
-	// Unpacker, when non-empty, is an mpack binary for Target to archive as
-	// bin/mpack. Packing itself never needs it: that happens on this machine.
+	// Unpacker, when non-empty, is an ofpack binary for Target to archive as
+	// bin/ofpack. Packing itself never needs it: that happens on this machine.
 	Unpacker []byte
 	// Output is the host path of the archive to produce.
 	Output string
@@ -192,7 +192,7 @@ var miseConfigPrecedence = []string{
 	".tool-versions",
 }
 
-// init keeps the two lists in step. A config file mpack copies into the
+// init keeps the two lists in step. A config file ofpack copies into the
 // container but never consults when choosing Python would be a silent gap,
 // which is the defect this ordering was added to close.
 func init() {
@@ -266,7 +266,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	args := []string{
 		"run", "--rm", "-i", "--platform", opts.Target,
 		"-e", "HOME=" + containerHome,
-		"-e", "MPACK_CONTAINER_PROJECT=" + containerProject,
+		"-e", "OFPACK_CONTAINER_PROJECT=" + containerProject,
 	}
 	hasGlobal := false
 	if opts.UV == nil && opts.GlobalConfigDir != "" {
@@ -307,7 +307,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 
 // crossScript is what runs inside the container: install mise, install the
 // project's tools for the target platform, then pack them with the target
-// mpack. Mounts are read only, so the config is copied to writable locations
+// ofpack. Mounts are read only, so the config is copied to writable locations
 // before mise touches it.
 func crossScript(opts CrossOptions, hasGlobal bool, configs []configMount) string {
 	return scopedCrossScript(opts, hasGlobal, configs, []string{containerPathFor(opts.ProjectDir, "", "/root")})
@@ -322,7 +322,7 @@ apt-get install -y -qq --no-install-recommends \
 
 export MISE_DATA_DIR="$HOME/.local/share/mise"
 export MISE_CONFIG_DIR="$HOME/.config/mise"
-mkdir -p "$MISE_DATA_DIR" "$MISE_CONFIG_DIR" "$MPACK_CONTAINER_PROJECT"
+mkdir -p "$MISE_DATA_DIR" "$MISE_CONFIG_DIR" "$OFPACK_CONTAINER_PROJECT"
 `)
 	if hasGlobal {
 		b.WriteString(`cp -R /host/global-config/. "$MISE_CONFIG_DIR"/
@@ -339,10 +339,10 @@ curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh >/dev/nul
 	for _, dir := range scopes {
 		fmt.Fprintf(&b, "cd %s\necho %s >&2\nmise install --yes >&2\n", shellQuote(dir), shellQuote("--- installing scope "+dir+" ---"))
 	}
-	b.WriteString("cd \"$MPACK_CONTAINER_PROJECT\"\necho '--- collecting ---' >&2\n")
+	b.WriteString("cd \"$OFPACK_CONTAINER_PROJECT\"\necho '--- collecting ---' >&2\n")
 	// Everything above logs to stderr so stdout carries only the payload.
 	// mise installs the project's tools, then the payload script streams the
-	// result out. mpack is not involved inside the container at all;
+	// result out. ofpack is not involved inside the container at all;
 	// --exclude and --allow-unresolved are applied on this machine, against
 	// the payload.
 	b.WriteString(ScopedPayloadScript(scopes))
@@ -408,5 +408,5 @@ func shellQuoteIfNeeded(s string) string {
 	return s
 }
 
-// HostPlatform is the platform string of the machine mpack is running on.
+// HostPlatform is the platform string of the machine ofpack is running on.
 func HostPlatform() string { return runtime.GOOS + "/" + runtime.GOARCH }

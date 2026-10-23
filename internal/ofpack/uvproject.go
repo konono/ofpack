@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"crypto/sha256"
@@ -35,7 +35,7 @@ const (
 	VenvDir = ".venv"
 )
 
-// projectFiles are the dependency files mpack opens in a uv project. When
+// projectFiles are the dependency files ofpack opens in a uv project. When
 // --python is absent it may also read the project's mise.toml, solely to
 // select Python. Everything else - .credentials, .generated-passwords.yml,
 // .envrc, inventories, roles - is neither read nor packed.
@@ -61,7 +61,7 @@ func FindUVProject(root string) (string, error) {
 		if entry.IsDir() {
 			if path != root {
 				switch entry.Name() {
-				case ".git", ".venv", ".mpack", "node_modules", ".tox", ".nox", "__pycache__", "vendor", "build", "dist", ".cache":
+				case ".git", ".venv", ".ofpack", "node_modules", ".tox", ".nox", "__pycache__", "vendor", "build", "dist", ".cache":
 					return filepath.SkipDir
 				}
 			}
@@ -106,7 +106,7 @@ type UVProject struct {
 	VerifiedOffline string `json:"verified_offline,omitempty"`
 }
 
-// UVSource is what mpack read from the project directory. Nothing outside
+// UVSource is what ofpack read from the project directory. Nothing outside
 // these three files is opened.
 type UVSource struct {
 	Dir             string
@@ -122,7 +122,7 @@ type UVSource struct {
 
 // ReadUVProject reads a uv project's dependency declaration. It opens
 // pyproject.toml, and uv.lock and requirements.txt if they exist, and nothing
-// else: a project directory can hold credentials, and mpack has no business
+// else: a project directory can hold credentials, and ofpack has no business
 // in them.
 func ReadUVProject(dir string) (*UVSource, error) {
 	dir, err := filepath.Abs(dir)
@@ -308,7 +308,7 @@ func tomlConfigPython(file string, data []byte) (string, error) {
 	case raw == "":
 		return "", unreadablePython(file, "it has no value")
 	case strings.HasPrefix(raw, "["):
-		// Several versions at once: mpack builds one environment, so which
+		// Several versions at once: ofpack builds one environment, so which
 		// was meant is genuinely ambiguous.
 		return "", unreadablePython(file, "it lists several versions")
 	case strings.HasPrefix(raw, "{"):
@@ -356,7 +356,7 @@ func PythonSelectorLabel(file string) string {
 }
 
 func unreadablePython(file, why string) error {
-	return fmt.Errorf("%s selects a Python that mpack cannot interpret: %s.\nIt is not ignored, because that would silently build the environment on a different Python than this directory asks for. Use --python X.Y to choose one explicitly", file, why)
+	return fmt.Errorf("%s selects a Python that ofpack cannot interpret: %s.\nIt is not ignored, because that would silently build the environment on a different Python than this directory asks for. Use --python X.Y to choose one explicitly", file, why)
 }
 
 // MissingFromRequirementsTxt reports dependencies that pyproject declares but
@@ -489,7 +489,7 @@ func normalizeDist(name string) string {
 }
 
 // tomlStringArray reads a single array of strings from a top-level table. It
-// is deliberately small: mpack needs two fields out of pyproject.toml and
+// is deliberately small: ofpack needs two fields out of pyproject.toml and
 // nothing else, and a full TOML parser is not worth the dependency.
 func tomlStringArray(doc, table, key string) ([]string, bool) {
 	body, ok := tomlTableBody(doc, table)
@@ -594,7 +594,7 @@ func tomlTableBody(doc, table string) (string, bool) {
 
 // findKey locates a top-level key assignment in a table body.
 func findKey(body, key string) int {
-	// TOML allows a bare key or a quoted one, and mise honours both. mpack
+	// TOML allows a bare key or a quoted one, and mise honours both. ofpack
 	// writes the quoted form itself, so matching only the bare one meant it
 	// could not read back configuration in its own style.
 	forms := []string{key, `"` + key + `"`, "'" + key + "'"}
@@ -642,20 +642,20 @@ func UVBuildScript(s *UVSource, pythonSpec string) string {
 apt-get update -qq >&2
 apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils >/dev/null 2>&1
 
-export MISE_DATA_DIR=/mpack-out/mise
-export MISE_CONFIG_DIR=/mpack-out/mise/config
-mkdir -p "$MISE_CONFIG_DIR" /mpack-out/` + UVPrefix + `/wheelhouse
+export MISE_DATA_DIR=/ofpack-out/mise
+export MISE_CONFIG_DIR=/ofpack-out/mise/config
+mkdir -p "$MISE_CONFIG_DIR" /ofpack-out/` + UVPrefix + `/wheelhouse
 `)
-	fmt.Fprintf(&b, `cat > "$MISE_CONFIG_DIR/config.toml" <<'MPACK_CFG'
+	fmt.Fprintf(&b, `cat > "$MISE_CONFIG_DIR/config.toml" <<'OFPACK_CFG'
 [tools]
 "python" = %s
 "uv" = "latest"
-MPACK_CFG
+OFPACK_CFG
 `, tomlQuote(pythonSpec))
 
-	b.WriteString(`curl -fsSL https://mise.run | MISE_INSTALL_PATH=/mpack-out/mise/bin/mise sh >/dev/null 2>&1
-/mpack-out/mise/bin/mise install --yes >&2
-eval "$(/mpack-out/mise/bin/mise -C / env -s bash)"
+	b.WriteString(`curl -fsSL https://mise.run | MISE_INSTALL_PATH=/ofpack-out/mise/bin/mise sh >/dev/null 2>&1
+/ofpack-out/mise/bin/mise install --yes >&2
+eval "$(/ofpack-out/mise/bin/mise -C / env -s bash)"
 echo "--- toolchain ---" >&2
 python --version >&2
 `)
@@ -663,22 +663,22 @@ python --version >&2
 	// The requirement set comes from pyproject's dependencies. Using
 	// requirements.txt instead would install a subset - in a real project it
 	// was missing Ansible entirely - so it is never the source of truth.
-	b.WriteString(heredoc("/mpack-out/"+RequirementsName, s.Requirements))
+	b.WriteString(heredoc("/ofpack-out/"+RequirementsName, s.Requirements))
 	if len(s.Constraints) > 0 {
-		b.WriteString(heredoc("/mpack-out/"+ConstraintsName, s.Constraints))
+		b.WriteString(heredoc("/ofpack-out/"+ConstraintsName, s.Constraints))
 	}
 
 	// pip is what fetches the wheels, so its absence is fatal rather than
 	// something to shrug at. Nothing here is allowed to fail silently.
 	b.WriteString(`
 python -m ensurepip --upgrade >/dev/null 2>&1 \
-  || echo "mpack: ensurepip reported a problem; checking for pip anyway" >&2
+  || echo "ofpack: ensurepip reported a problem; checking for pip anyway" >&2
 if ! python -m pip --version >/dev/null 2>&1; then
-  echo "mpack: the packed python has no pip, so the wheels cannot be downloaded" >&2
+  echo "ofpack: the packed python has no pip, so the wheels cannot be downloaded" >&2
   exit 1
 fi
 python -m pip install --quiet --upgrade pip >/dev/null 2>&1 \
-  || echo "mpack: could not upgrade pip; continuing with the version that shipped" >&2
+  || echo "ofpack: could not upgrade pip; continuing with the version that shipped" >&2
 
 echo "--- downloading wheels ---" >&2
 `)
@@ -686,27 +686,27 @@ echo "--- downloading wheels ---" >&2
 	// pack, not leave a hole that only shows up on the disconnected machine.
 	constraintArg := ""
 	if len(s.Constraints) > 0 {
-		constraintArg = " -c /mpack-out/" + ConstraintsName
+		constraintArg = " -c /ofpack-out/" + ConstraintsName
 	}
 	fmt.Fprintf(&b, `python -m pip download \
-  --dest /mpack-out/%s \
+  --dest /ofpack-out/%s \
   --only-binary=:all: \
-  -r /mpack-out/%s%s >&2
+  -r /ofpack-out/%s%s >&2
 `, WheelhouseDir, RequirementsName, constraintArg)
 
-	b.WriteString(`wheels=$(find /mpack-out/` + WheelhouseDir + ` -name '*.whl' | wc -l)
+	b.WriteString(`wheels=$(find /ofpack-out/` + WheelhouseDir + ` -name '*.whl' | wc -l)
 echo "--- $wheels wheels ---" >&2
 if [ "$wheels" -eq 0 ]; then
-  echo "mpack: no wheels were downloaded" >&2
+  echo "ofpack: no wheels were downloaded" >&2
   exit 1
 fi
 
 # The payload step shells out to mise, which lives in the tree being packed
 # rather than on the image's PATH.
-PATH="/mpack-out/mise/bin:$PATH"
+PATH="/ofpack-out/mise/bin:$PATH"
 export PATH
 
-` + PayloadScriptWith("/mpack-out/"+UVPrefix) + `
+` + PayloadScriptWith("/ofpack-out/"+UVPrefix) + `
 `)
 	return b.String()
 }
@@ -719,16 +719,16 @@ func UVVerifyScript() string {
 	return `
 # Prove there is no network rather than assuming the container has none.
 if curl -s --max-time 3 -o /dev/null https://pypi.org/simple/ 2>/dev/null; then
-  echo "mpack: this check must run without network access, but pypi.org is reachable" >&2
+  echo "ofpack: this check must run without network access, but pypi.org is reachable" >&2
   exit 1
 fi
 
 # The payload carries the interpreter under installs/; it is used directly
 # here because this check is about the wheel closure. The mise-driven path is
-# what "mpack uv restore" exercises on the target itself.
+# what "ofpack uv restore" exercises on the target itself.
 py=$(ls -d /payload/` + InstallsPrefix + `/python/*/bin/python3 2>/dev/null | head -1)
 if [ -z "$py" ]; then
-  echo "mpack: the payload carries no python interpreter" >&2
+  echo "ofpack: the payload carries no python interpreter" >&2
   exit 1
 fi
 echo "python: $("$py" --version 2>&1)" >&2
@@ -747,20 +747,20 @@ cd /tmp
 // shell does not touch their contents.
 func heredoc(path string, lines []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "cat > %s <<'MPACK_EOF'\n", shellQuoteIfNeeded(path))
+	fmt.Fprintf(&b, "cat > %s <<'OFPACK_EOF'\n", shellQuoteIfNeeded(path))
 	for _, l := range lines {
 		b.WriteString(l)
 		b.WriteByte('\n')
 	}
-	b.WriteString("MPACK_EOF\n")
+	b.WriteString("OFPACK_EOF\n")
 	return b.String()
 }
 
-// RestoreOptions controls `mpack uv restore`.
+// RestoreOptions controls `ofpack uv restore`.
 type RestoreOptions struct {
 	// Project is the directory holding pyproject.toml; .venv goes beside it.
 	Project string
-	// Dest is the unpacked mpack tree. Empty means the conventional one.
+	// Dest is the unpacked ofpack tree. Empty means the conventional one.
 	Dest string
 	// Policy decides what happens when .venv already exists.
 	Policy OverwritePolicy
@@ -776,7 +776,7 @@ func RestoreVenv(opts RestoreOptions) (venvPath string, built bool, err error) {
 	}
 	dest := opts.Dest
 	if dest == "" {
-		dest = filepath.Join(project, MpackSubdir)
+		dest = filepath.Join(project, OfpackSubdir)
 	}
 	dest, err = filepath.Abs(dest)
 	if err != nil {
@@ -807,7 +807,7 @@ func RestoreVenv(opts RestoreOptions) (venvPath string, built bool, err error) {
 
 	// Build beside the destination, on the same filesystem, so swapping it
 	// into place is a rename and never a half-copied directory.
-	staging, err := os.MkdirTemp(project, ".venv.mpack-")
+	staging, err := os.MkdirTemp(project, ".venv.ofpack-")
 	if err != nil {
 		return "", false, err
 	}
@@ -920,7 +920,7 @@ func toolBin(dest string, env []string, tool, wantVersion string) (string, error
 // archive's own install directory for that tool and version.
 func checkToolProvenance(dest, tool, wantVersion, resolved string) error {
 	if wantVersion == "" {
-		return fmt.Errorf("the archive records no version for %s, so the one that was resolved cannot be checked; re-pack with a current mpack", tool)
+		return fmt.Errorf("the archive records no version for %s, so the one that was resolved cannot be checked; re-pack with a current ofpack", tool)
 	}
 	want := filepath.Join(dest, InstallsPrefix, tool, wantVersion)
 	abs, err := filepath.Abs(resolved)
@@ -976,16 +976,16 @@ func checkProjectMatches(project string, p *UVProject) error {
 func checkRecordedHash(field, value string, required bool) error {
 	if value == "" {
 		if required {
-			return fmt.Errorf("the archive records no %s, so there is no way to tell whether this project still matches it; re-pack with a current mpack", field)
+			return fmt.Errorf("the archive records no %s, so there is no way to tell whether this project still matches it; re-pack with a current ofpack", field)
 		}
 		return nil
 	}
 	if len(value) != 64 {
-		return fmt.Errorf("the archive records a malformed %s (%d characters, expected 64); it was not written by mpack or has been altered", field, len(value))
+		return fmt.Errorf("the archive records a malformed %s (%d characters, expected 64); it was not written by ofpack or has been altered", field, len(value))
 	}
 	for _, r := range value {
 		if !strings.ContainsRune("0123456789abcdef", r) {
-			return fmt.Errorf("the archive records a malformed %s (not hexadecimal); it was not written by mpack or has been altered", field)
+			return fmt.Errorf("the archive records a malformed %s (not hexadecimal); it was not written by ofpack or has been altered", field)
 		}
 	}
 	return nil
@@ -1006,7 +1006,7 @@ func short(h string) string {
 func readInstalledManifest(dest string) (*Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(dest, InstalledManifestName))
 	if err != nil {
-		return nil, fmt.Errorf("%s does not look like an unpacked mpack directory: %w", dest, err)
+		return nil, fmt.Errorf("%s does not look like an unpacked ofpack directory: %w", dest, err)
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -1019,7 +1019,7 @@ func readInstalledManifest(dest string) (*Manifest, error) {
 // one the generated scripts build.
 func snapshotEnv(dest string) ([]string, error) {
 	if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(MiseBinName))); err != nil {
-		return nil, fmt.Errorf("%s does not look like an unpacked mpack directory: %w", dest, err)
+		return nil, fmt.Errorf("%s does not look like an unpacked ofpack directory: %w", dest, err)
 	}
 	return append(scrubbedEnv(),
 		"MISE_DATA_DIR="+dest,
@@ -1153,7 +1153,7 @@ func majorMinor(v string) (string, bool) {
 // specifier set, so a version picked by hand with --python cannot quietly
 // contradict the project.
 //
-// Comparison is on major and minor only, which is the granularity mpack
+// Comparison is on major and minor only, which is the granularity ofpack
 // installs at. A patch-level bound such as ">=3.12.4" is treated as its
 // minor, which can accept a slightly older patch; that is a deliberate
 // limitation of the granularity, not a silent mismatch of the minor version.
@@ -1311,9 +1311,9 @@ func AttachUVProject(plan *Plan, s *UVSource, payloadPath string) (*UVProject, e
 		return nil, fmt.Errorf("the payload carries no wheels")
 	}
 	plan.Manifest.UVProject = rec
-	// An older mpack does not know about uv/ and would drop it while
+	// An older ofpack does not know about uv/ and would drop it while
 	// reporting a successful unpack, so the archive declares a schema such
-	// an mpack refuses outright.
+	// an ofpack refuses outright.
 	plan.Manifest.Schema = SchemaVersionUV
 	return rec, nil
 }

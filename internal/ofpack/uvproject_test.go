@@ -1,10 +1,11 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -135,7 +136,7 @@ func TestLockPinsAreConstraintsAndExcludeTheProject(t *testing.T) {
 }
 
 // Only three files are ever opened. A project directory can hold
-// credentials, and mpack has no business reading them.
+// credentials, and ofpack has no business reading them.
 func TestOnlyDependencyFilesAreRead(t *testing.T) {
 	dir := writeProject(t, map[string]string{
 		projectFiles.Pyproject:     samplePyproject,
@@ -351,7 +352,7 @@ func TestFindUVProjectSelectsOneAndRejectsAmbiguity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "pyproject.toml"), []byte("[project]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, skip := range []string{".venv", ".git", "node_modules", ".mpack"} {
+	for _, skip := range []string{".venv", ".git", "node_modules", ".ofpack"} {
 		dir := filepath.Join(root, skip)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -479,8 +480,8 @@ func TestUVBuildScriptIsSelfContainedAndFailsLoudly(t *testing.T) {
 	for _, want := range []string{
 		`"python" = "3.12"`, `"uv" = "latest"`, // its own configuration
 		"pip download", "--only-binary=:all:",
-		"-c /mpack-out/" + ConstraintsName, // the lock, as constraints
-		"pkg-core>=2.17,<3.0",              // the real requirement, comma intact
+		"-c /ofpack-out/" + ConstraintsName, // the lock, as constraints
+		"pkg-core>=2.17,<3.0",               // the real requirement, comma intact
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the build script is missing %q:\n%s", want, script)
@@ -568,7 +569,7 @@ func TestRestoreRefusesWhenTheProjectHasChanged(t *testing.T) {
 // and --skip-existing does not touch it at all.
 func TestRestoreRespectsAnExistingVenv(t *testing.T) {
 	project := writeProject(t, map[string]string{projectFiles.Pyproject: samplePyproject})
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	s, err := ReadUVProject(project)
 	if err != nil {
 		t.Fatal(err)
@@ -610,7 +611,7 @@ func TestRestoreRespectsAnExistingVenv(t *testing.T) {
 	if body, _ := os.ReadFile(marker); string(body) != "keep" {
 		t.Fatalf("--skip-existing touched the existing .venv: %q", body)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(project, ".venv.mpack-*")); len(entries) != 0 {
+	if entries, _ := filepath.Glob(filepath.Join(project, ".venv.ofpack-*")); len(entries) != 0 {
 		t.Errorf("staging directories were left behind: %v", entries)
 	}
 }
@@ -618,7 +619,7 @@ func TestRestoreRespectsAnExistingVenv(t *testing.T) {
 // A failed build must leave the previous .venv exactly as it was.
 func TestRestoreKeepsThePreviousVenvWhenTheBuildFails(t *testing.T) {
 	project := writeProject(t, map[string]string{projectFiles.Pyproject: samplePyproject})
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	s, err := ReadUVProject(project)
 	if err != nil {
 		t.Fatal(err)
@@ -648,7 +649,7 @@ func TestRestoreKeepsThePreviousVenvWhenTheBuildFails(t *testing.T) {
 	if body, _ := os.ReadFile(filepath.Join(venv, "PRE-EXISTING")); string(body) != "keep" {
 		t.Fatalf("the previous .venv was lost: %q", body)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(project, ".venv.mpack-*")); len(entries) != 0 {
+	if entries, _ := filepath.Glob(filepath.Join(project, ".venv.ofpack-*")); len(entries) != 0 {
 		t.Errorf("staging directories were left behind: %v", entries)
 	}
 }
@@ -656,7 +657,7 @@ func TestRestoreKeepsThePreviousVenvWhenTheBuildFails(t *testing.T) {
 // An archive with no Python environment in it cannot restore one.
 func TestRestoreRefusesAnArchiveWithoutAUVProject(t *testing.T) {
 	project := writeProject(t, map[string]string{projectFiles.Pyproject: samplePyproject})
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	unpackedTree(t, dest)
 	if _, _, err := RestoreVenv(RestoreOptions{Project: project}); err == nil ||
 		!strings.Contains(err.Error(), "--uv-project") {
@@ -679,9 +680,9 @@ func TestVenvIsBuiltRelocatable(t *testing.T) {
 	}
 }
 
-// An mpack that predates the uv payload drops the uv/ directory while
+// An ofpack that predates the uv payload drops the uv/ directory while
 // reporting a successful unpack, leaving a tree that looks fine but cannot
-// restore. The archive declares a schema such an mpack refuses, and this one
+// restore. The archive declares a schema such an ofpack refuses, and this one
 // must handle both.
 func TestUVArchiveDeclaresANewerSchema(t *testing.T) {
 	root := fakeSource(t, "python/3.12.15")
@@ -707,7 +708,7 @@ func TestUVArchiveDeclaresANewerSchema(t *testing.T) {
 	}
 	m, err := ReadManifest(bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		t.Fatalf("this mpack must read a uv archive: %v", err)
+		t.Fatalf("this ofpack must read a uv archive: %v", err)
 	}
 	if m.Schema != SchemaVersionUV {
 		t.Errorf("schema = %d, want %d", m.Schema, SchemaVersionUV)
@@ -782,14 +783,19 @@ func buildPayloadWithUV(t *testing.T, containerRoot string) string {
 // read from an archive, which is not a trusted input.
 func TestRestoreRejectsAMalformedHashWithoutPanicking(t *testing.T) {
 	project := writeProject(t, map[string]string{projectFiles.Pyproject: samplePyproject})
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	unpackedTree(t, dest)
 
+	// Written through the constant: a literal would quietly become a legacy
+	// schema number the next time the layout changes.
+	uvManifest := func(body string) string {
+		return fmt.Sprintf(`{"schema":%d,"uv_project":{%s}}`, SchemaVersionUV, body)
+	}
 	for _, bad := range []struct{ name, body string }{
-		{"empty pyproject hash", `{"schema":2,"uv_project":{"pyproject_sha256":""}}`},
-		{"short pyproject hash", `{"schema":2,"uv_project":{"pyproject_sha256":"abc"}}`},
-		{"non-hex pyproject hash", `{"schema":2,"uv_project":{"pyproject_sha256":"` + strings.Repeat("z", 64) + `"}}`},
-		{"short lock hash", `{"schema":2,"uv_project":{"pyproject_sha256":"` + strings.Repeat("a", 64) + `","lock_sha256":"ab"}}`},
+		{"empty pyproject hash", uvManifest(`"pyproject_sha256":""`)},
+		{"short pyproject hash", uvManifest(`"pyproject_sha256":"abc"`)},
+		{"non-hex pyproject hash", uvManifest(`"pyproject_sha256":"` + strings.Repeat("z", 64) + `"`)},
+		{"short lock hash", uvManifest(`"pyproject_sha256":"` + strings.Repeat("a", 64) + `","lock_sha256":"ab"`)},
 	} {
 		t.Run(bad.name, func(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dest, InstalledManifestName), []byte(bad.body), 0o644); err != nil {
@@ -812,7 +818,7 @@ func TestRestoreRejectsAMalformedHashWithoutPanicking(t *testing.T) {
 	}
 }
 
-// mise reads configuration mpack cannot shut out, so `which` can answer with
+// mise reads configuration ofpack cannot shut out, so `which` can answer with
 // the machine's own Python or uv. Building the environment with those while
 // believing the archive's were used produces an environment nobody packed.
 func TestRestoreRefusesToolsFromOutsideTheArchive(t *testing.T) {

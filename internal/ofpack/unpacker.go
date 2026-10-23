@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// DefaultBuilderImage is used to build the target-platform mpack when this
+// DefaultBuilderImage is used to build the target-platform ofpack when this
 // machine has no usable Go toolchain. The build itself runs on the host
 // architecture and cross compiles, because the Go runtime is not reliable
 // under foreign-architecture emulation.
@@ -40,7 +40,7 @@ const UnpackerGoVersion = "go1.25"
 // back to a toolchain whose output is known to crash.
 const minVerifiedBuilderMinor = 25
 
-// UnpackerBuilder produces an mpack binary for another platform from the Go
+// UnpackerBuilder produces an ofpack binary for another platform from the Go
 // source embedded in this one, so neither a source checkout nor a Go
 // toolchain is required to carry an unpacker along with an archive.
 type UnpackerBuilder struct {
@@ -54,7 +54,7 @@ type UnpackerBuilder struct {
 	Log io.Writer
 }
 
-// Build returns a static mpack binary for target ("linux/amd64"). It prefers
+// Build returns a static ofpack binary for target ("linux/amd64"). It prefers
 // a Go toolchain on this machine - cross compiling is instant and needs no
 // image - and falls back to a container when there is none.
 func (b UnpackerBuilder) Build(target string) ([]byte, error) {
@@ -90,7 +90,7 @@ func (b UnpackerBuilder) Build(target string) ([]byte, error) {
 // VerifyUnpacker checks that a binary really is an executable for target,
 // whatever its provenance. A bundled unpacker that does not run on the target
 // breaks the one-file bootstrap, so a caller-supplied binary is checked just
-// as closely as one mpack builds itself.
+// as closely as one ofpack builds itself.
 func VerifyUnpacker(bin []byte, target string) error {
 	goos, goarch, err := ResolveTargetOrHost(target)
 	if err != nil {
@@ -121,7 +121,7 @@ var machoCPUTypes = map[string]uint32{
 	"amd64": 0x01000007, // CPU_TYPE_X86_64
 }
 
-// verifyMachO is the macOS counterpart of verifyELF, so that a --mpack-bin
+// verifyMachO is the macOS counterpart of verifyELF, so that a --ofpack-bin
 // given for a native archive is checked too.
 func verifyMachO(bin []byte, goarch string) error {
 	if len(bin) < 8 {
@@ -233,7 +233,7 @@ func buildEnv(goos, goarch, gocache, gopath string) []string {
 }
 
 func (b UnpackerBuilder) buildWithHostGo(goos, goarch string) ([]byte, error) {
-	dir, err := os.MkdirTemp("", "mpack-build-")
+	dir, err := os.MkdirTemp("", "ofpack-build-")
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +246,7 @@ func (b UnpackerBuilder) buildWithHostGo(goos, goarch string) ([]byte, error) {
 	if err := b.writeSource(src); err != nil {
 		return nil, err
 	}
-	out := filepath.Join(dir, "mpack")
+	out := filepath.Join(dir, "ofpack")
 	cmd := exec.Command("go", buildFlags(out)...)
 	cmd.Dir = src
 	cmd.Env = buildEnv(goos, goarch, filepath.Join(dir, "cache"), filepath.Join(dir, "gopath"))
@@ -268,7 +268,7 @@ func (b UnpackerBuilder) buildInContainer(goos, goarch, image string) ([]byte, e
 		engine = "podman"
 	}
 	if _, err := exec.LookPath(engine); err != nil {
-		return nil, fmt.Errorf("bundling an unpacker needs either a Go toolchain (%s or newer) or %s, and neither is available; alternatively pass --mpack-bin with a binary already built for the target, or --no-unpacker to leave it out", UnpackerGoVersion, engine)
+		return nil, fmt.Errorf("bundling an unpacker needs either a Go toolchain (%s or newer) or %s, and neither is available; alternatively pass --ofpack-bin with a binary already built for the target, or --no-unpacker to leave it out", UnpackerGoVersion, engine)
 	}
 
 	var srcTar bytes.Buffer
@@ -285,7 +285,7 @@ func (b UnpackerBuilder) buildInContainer(goos, goarch, image string) ([]byte, e
 		image,
 		"sh", "-euc",
 		"mkdir -p /src && cd /src && tar -x && " +
-			"go build -trimpath -ldflags '-s -w' -o /tmp/mpack . >&2 && cat /tmp/mpack",
+			"go build -trimpath -ldflags '-s -w' -o /tmp/ofpack . >&2 && cat /tmp/ofpack",
 	}
 	cmd := exec.Command(engine, args...)
 	cmd.Stdin = &srcTar
@@ -367,7 +367,7 @@ func verifyELF(bin []byte, goos, goarch string) error {
 	return nil
 }
 
-// SelfBinary returns the running mpack executable, for use as the bootstrap
+// SelfBinary returns the running ofpack executable, for use as the bootstrap
 // unpacker of a same-platform archive.
 func SelfBinary() ([]byte, error) {
 	exe, err := os.Executable()

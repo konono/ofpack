@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 // Archive layout (all paths are slash separated and relative):
 //
@@ -9,9 +9,9 @@ package mpack
 const (
 	ManifestName = "manifest.json"
 	MiseBinName  = "bin/mise"
-	// UnpackerName is an mpack binary for the archive's own platform, so the
+	// UnpackerName is an ofpack binary for the archive's own platform, so the
 	// receiving machine can unpack with nothing but tar to bootstrap.
-	UnpackerName   = "bin/mpack"
+	UnpackerName   = "bin/ofpack"
 	ConfigName     = "config/config.toml"
 	InstallsPrefix = "installs"
 
@@ -19,7 +19,7 @@ const (
 	// than carried in the archive, but they are installed through the same
 	// conflict checks and transaction as everything else.
 	ActivateName          = "activate.sh"
-	InstalledManifestName = "mpack-manifest.json"
+	InstalledManifestName = "ofpack-manifest.json"
 	// DirenvName is sourced from a project's .envrc. It sets the same
 	// environment as activate.sh but installs no shell hook, because direnv
 	// evaluates it in its own process and manages entering and leaving.
@@ -29,25 +29,39 @@ const (
 	// preserved along with the install trees.
 	CatalogDir = ".mise"
 
-	// SchemaVersion is what a plain archive declares. An mpack that predates
-	// a layout change must refuse such an archive rather than unpack it
-	// partially, so anything that adds a new kind of content bumps this.
-	SchemaVersion = 1
+	// The schema numbers below start at 4 because 1, 2 and 3 belong to
+	// archives produced by mpack, the name this tool had before. The rename
+	// changed the archive layout - the bundled unpacker is bin/ofpack where
+	// it used to be bin/mpack - so an mpack archive is not an ofpack archive
+	// and must not be unpacked as one. Numbering them apart makes each tool
+	// refuse the other's archives outright instead of dropping the parts it
+	// does not recognise.
+
+	// SchemaVersion is what a plain archive declares. An ofpack that
+	// predates a layout change must refuse such an archive rather than
+	// unpack it partially, so anything that adds a new kind of content
+	// bumps this.
+	SchemaVersion = 4
 	// SchemaVersionUV is declared by archives that carry a Python
-	// environment. An older mpack knows nothing of the uv/ directory and
+	// environment. An older ofpack knows nothing of the uv/ directory and
 	// would drop it while reporting success, leaving a tree that looks
 	// unpacked but cannot restore; the higher number makes it stop instead.
-	SchemaVersionUV = 2
-	// SchemaVersionScoped records the tool selection for the project root and
-	// each descendant mise scope. Older unpackers must reject this layout.
-	SchemaVersionScoped = 3
+	SchemaVersionUV = 5
+	// SchemaVersionScoped records the tool selection for the project root
+	// and each descendant mise scope. Older unpackers must reject this
+	// layout.
+	SchemaVersionScoped = 6
+
+	// legacyMaxSchema is the highest schema mpack ever wrote. Archives at or
+	// below it get an explanation rather than a bare "unsupported".
+	legacyMaxSchema = 3
 )
 
-// Manifest is the metadata stored at the head of every mpack archive.
+// Manifest is the metadata stored at the head of every ofpack archive.
 type Manifest struct {
-	Schema       int    `json:"schema"`
-	MpackVersion string `json:"mpack_version"`
-	CreatedAt    string `json:"created_at"`
+	Schema        int    `json:"schema"`
+	OfpackVersion string `json:"ofpack_version"`
+	CreatedAt     string `json:"created_at"`
 
 	// OS and Arch are runtime.GOOS / runtime.GOARCH of the machine that
 	// produced the archive. unpack refuses to run on a mismatch.
@@ -67,10 +81,11 @@ type Manifest struct {
 	Tools []Tool `json:"tools"`
 	// Scopes select from Tools at each project-relative directory. Tools is
 	// the physical union to install; Scopes records which version is active
-	// in each directory. A root scope with Path "." is required for schema 3.
+	// in each directory. A root scope with Path "." is required for
+	// SchemaVersionScoped.
 	Scopes     []Scope `json:"scopes,omitempty"`
 	HasCatalog bool    `json:"has_catalog"`
-	// HasUnpacker records whether bin/mpack is present, so unpack installs it
+	// HasUnpacker records whether bin/ofpack is present, so unpack installs it
 	// alongside everything else.
 	HasUnpacker bool `json:"has_unpacker,omitempty"`
 
@@ -105,11 +120,11 @@ type Scope struct {
 	Tools []Tool `json:"tools"`
 }
 
-// MpackSubdir is the directory, relative to the project directory, where an
+// OfpackSubdir is the directory, relative to the project directory, where an
 // unpacked toolchain lives by default. Keeping it inside the project mirrors
 // mise's directory-scoped model while staying clear of the project's own
 // files.
-const MpackSubdir = ".mpack"
+const OfpackSubdir = ".ofpack"
 
 // Tool is one packed mise tool at one exact version.
 type Tool struct {

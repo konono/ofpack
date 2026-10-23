@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"encoding/json"
@@ -49,7 +49,7 @@ func fakePlan(t *testing.T, root string, allowUnresolved bool, rels ...string) (
 		InstallsRoot: root,
 		Units:        append([]string(nil), rels...),
 		Manifest: Manifest{
-			Schema: SchemaVersion, MpackVersion: "test",
+			Schema: SchemaVersion, OfpackVersion: "test",
 			OS: runtime.GOOS, Arch: runtime.GOARCH, MiseVersion: "test",
 			Tools: tools, HomeRelativeProjectPath: "work/myapp",
 		},
@@ -303,7 +303,7 @@ func TestToolOrderFallsBackToVersionWithoutPathInfo(t *testing.T) {
 	}
 }
 
-// fakeMise installs a stub mise on MPACK_MISE_BIN that reports the given
+// fakeMise installs a stub mise on OFPACK_MISE_BIN that reports the given
 // tools and whose `env --json` behaviour is controllable, so the production
 // pack path can be driven without a real mise.
 func fakeMise(t *testing.T, installsRoot string, envJSON string, envFails bool, tools ...string) {
@@ -342,7 +342,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MPACK_MISE_BIN", bin)
+	t.Setenv("OFPACK_MISE_BIN", bin)
 }
 
 // If mise cannot tell us the precedence, a tool with several active versions

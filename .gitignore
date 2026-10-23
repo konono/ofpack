@@ -1,6 +1,6 @@
-/mpack
-/mpack-linux-amd64
-/mpack-linux-arm64
+/ofpack
+/ofpack-linux-amd64
+/ofpack-linux-arm64
 *.tar.gz
 /.panecom/
 

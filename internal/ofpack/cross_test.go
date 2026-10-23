@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"os"
@@ -13,7 +13,7 @@ func TestResolveTargetRejectsUnsupportedPlatforms(t *testing.T) {
 	}
 	for _, bad := range []string{"darwin/arm64", "windows/amd64", "linux", "", "linux/riscv64"} {
 		if _, _, err := ResolveTarget(bad); err == nil {
-			t.Errorf("ResolveTarget(%q) should fail: mpack cannot build a toolchain for it", bad)
+			t.Errorf("ResolveTarget(%q) should fail: ofpack cannot build a toolchain for it", bad)
 		}
 	}
 }
@@ -65,7 +65,7 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	}
 
 	// The tools must be installed in the container, not copied from the host,
-	// and the container streams a payload rather than running mpack.
+	// and the container streams a payload rather than running ofpack.
 	for _, want := range []string{"mise install", "mise ls --current --json", "mise bin-paths", "gzip"} {
 		if !strings.Contains(plan.Script, want) {
 			t.Errorf("script missing %q:\n%s", want, plan.Script)
@@ -73,7 +73,7 @@ func TestBuildCrossPlanRunsTheInstallInsideTheContainer(t *testing.T) {
 	}
 	// The container project path mirrors the host's home-relative path, so the
 	// archive keeps a usable default destination.
-	if !strings.Contains(args, "MPACK_CONTAINER_PROJECT=/root/work/myapp") {
+	if !strings.Contains(args, "OFPACK_CONTAINER_PROJECT=/root/work/myapp") {
 		t.Errorf("container project path not mirrored:\n%s", args)
 	}
 	// Only mise's own config files are copied in, never the project itself.
@@ -105,7 +105,7 @@ func TestBuildCrossPlanWithoutGlobalConfig(t *testing.T) {
 		t.Error("a missing global config dir must not be mounted")
 	}
 	// Outside the home directory the absolute path is reproduced as is.
-	if !strings.Contains(strings.Join(plan.Args, " "), "MPACK_CONTAINER_PROJECT="+filepath.ToSlash(project)) {
+	if !strings.Contains(strings.Join(plan.Args, " "), "OFPACK_CONTAINER_PROJECT="+filepath.ToSlash(project)) {
 		t.Errorf("unexpected container project path: %v", plan.Args)
 	}
 	if cl := plan.CommandLine(); !strings.HasPrefix(cl, "podman run --rm -i --platform linux/arm64 ") {
@@ -210,7 +210,7 @@ func TestCrossPackExcludesAncestorConfigsOutsideHome(t *testing.T) {
 	if !strings.Contains(plan.Script, "cp /host/mise-config/0 "+filepath.ToSlash(filepath.Join(project, "mise.toml"))) {
 		t.Fatal("root config not copied")
 	}
-	if !strings.Contains(args, "MPACK_CONTAINER_PROJECT="+filepath.ToSlash(project)) {
+	if !strings.Contains(args, "OFPACK_CONTAINER_PROJECT="+filepath.ToSlash(project)) {
 		t.Errorf("the project path should be mirrored absolutely:\n%s", args)
 	}
 }

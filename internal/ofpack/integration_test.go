@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"bytes"
@@ -13,18 +13,18 @@ import (
 // TestEndToEndWithRealMise packs a real (small) mise tool and then checks that
 // the bundled mise, running under an isolated HOME and MISE_DATA_DIR, reads
 // the generated config and finds the tool in its new location. It is skipped
-// when mise is not installed, or when MPACK_E2E_TOOL is not set to an
+// when mise is not installed, or when OFPACK_E2E_TOOL is not set to an
 // installed tool.
 //
-//	MPACK_E2E_TOOL='jq@1.8.1' go test ./... -run EndToEnd
+//	OFPACK_E2E_TOOL='jq@1.8.1' go test ./... -run EndToEnd
 func TestEndToEndWithRealMise(t *testing.T) {
-	spec := os.Getenv("MPACK_E2E_TOOL")
+	spec := os.Getenv("OFPACK_E2E_TOOL")
 	if spec == "" {
-		t.Skip("set MPACK_E2E_TOOL=<tool>@<version> (an already installed mise tool) to run the end to end test")
+		t.Skip("set OFPACK_E2E_TOOL=<tool>@<version> (an already installed mise tool) to run the end to end test")
 	}
 	name, version, ok := strings.Cut(spec, "@")
 	if !ok {
-		t.Fatalf("MPACK_E2E_TOOL=%q, want <tool>@<version>", spec)
+		t.Fatalf("OFPACK_E2E_TOOL=%q, want <tool>@<version>", spec)
 	}
 	if _, err := exec.LookPath("mise"); err != nil {
 		t.Skip("mise is not installed")
@@ -53,7 +53,7 @@ func TestEndToEndWithRealMise(t *testing.T) {
 
 	// Unpack somewhere entirely unrelated to the source installs root.
 	home := t.TempDir()
-	dest := filepath.Join(home, "work", "myapp", MpackSubdir)
+	dest := filepath.Join(home, "work", "myapp", OfpackSubdir)
 	if _, err := Unpack(bytes.NewReader(archive.Bytes()), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
@@ -118,15 +118,15 @@ func TestEndToEndWithRealMise(t *testing.T) {
 // version as the source. mise lists versions in sorted order while the config
 // order decides precedence, so a naive pack flips the default.
 //
-//	MPACK_E2E_MULTI='node@24.16.0,22.22.2' go test ./... -run EndToEnd
+//	OFPACK_E2E_MULTI='node@24.16.0,22.22.2' go test ./... -run EndToEnd
 func TestEndToEndPreservesVersionPrecedence(t *testing.T) {
-	spec := os.Getenv("MPACK_E2E_MULTI")
+	spec := os.Getenv("OFPACK_E2E_MULTI")
 	if spec == "" {
-		t.Skip("set MPACK_E2E_MULTI=<tool>@<v1>,<v2> (both already installed) to run the precedence test")
+		t.Skip("set OFPACK_E2E_MULTI=<tool>@<v1>,<v2> (both already installed) to run the precedence test")
 	}
 	name, versions, ok := strings.Cut(spec, "@")
 	if !ok || !strings.Contains(versions, ",") {
-		t.Fatalf("MPACK_E2E_MULTI=%q, want <tool>@<v1>,<v2>", spec)
+		t.Fatalf("OFPACK_E2E_MULTI=%q, want <tool>@<v1>,<v2>", spec)
 	}
 	if _, err := exec.LookPath("mise"); err != nil {
 		t.Skip("mise is not installed")
@@ -163,7 +163,7 @@ func TestEndToEndPreservesVersionPrecedence(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	dest := filepath.Join(home, "work", "myapp", MpackSubdir)
+	dest := filepath.Join(home, "work", "myapp", OfpackSubdir)
 	if _, err := Unpack(bytes.NewReader(archive.Bytes()), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}

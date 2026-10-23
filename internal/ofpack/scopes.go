@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"encoding/json"
@@ -28,7 +28,7 @@ func DiscoverMiseScopes(root string) ([]string, error) {
 		}
 		if dir != root {
 			switch ent.Name() {
-			case ".git", ".venv", ".mpack", "node_modules":
+			case ".git", ".venv", ".ofpack", "node_modules":
 				return filepath.SkipDir
 			}
 			if canonical(dir) == global {

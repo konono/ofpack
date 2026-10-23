@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -26,7 +26,7 @@ type PackOptions struct {
 	// error to a recorded warning. Off by default so a broken archive is never
 	// produced silently.
 	AllowUnresolved bool
-	// Version is the mpack build version recorded in the manifest.
+	// Version is the ofpack build version recorded in the manifest.
 	Version string
 	// Log receives human readable progress; may be nil.
 	Log io.Writer
@@ -51,8 +51,8 @@ type Plan struct {
 	payloadPath string
 	// byName indexes the payload entries that survived classification.
 	byName map[string]entry
-	// unpacker, when set, is an mpack binary that runs on the target; it is
-	// archived as bin/mpack so the target needs nothing but tar to bootstrap.
+	// unpacker, when set, is an ofpack binary that runs on the target; it is
+	// archived as bin/ofpack so the target needs nothing but tar to bootstrap.
 	unpacker []byte
 }
 
@@ -178,12 +178,12 @@ func BuildPlan(opts PackOptions) (*Plan, error) {
 		InstallsRoot: installsRoot,
 		Units:        units,
 		Manifest: Manifest{
-			Schema:       SchemaVersionScoped,
-			MpackVersion: opts.Version,
-			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-			OS:           runtime.GOOS,
-			Arch:         runtime.GOARCH,
-			MiseVersion:  env.Version,
+			Schema:        SchemaVersionScoped,
+			OfpackVersion: opts.Version,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+			OS:            runtime.GOOS,
+			Arch:          runtime.GOARCH,
+			MiseVersion:   env.Version,
 
 			HomeRelativeProjectPath: relToHome(workDir),
 			Tools:                   kept,
@@ -215,7 +215,7 @@ func (p *Plan) inPackedSet(rel string) bool {
 // BuildPlanFromPayload turns a container payload into a plan. The tools were
 // installed for the target platform inside the container; everything from
 // here on - classification, the manifest, the archive itself - runs on this
-// machine, so no target-platform mpack is needed to pack.
+// machine, so no target-platform ofpack is needed to pack.
 func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (*Plan, error) {
 	goos, goarch, err := ResolveTarget(target)
 	if err != nil {
@@ -320,8 +320,8 @@ func BuildPlanFromPayload(payloadPath string, target string, opts PackOptions) (
 				}
 				return SchemaVersion
 			}(),
-			MpackVersion: opts.Version,
-			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+			OfpackVersion: opts.Version,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 			// The archive describes the platform it was built for, which is
 			// the container's, not this machine's.
 			OS:                      goos,
@@ -484,7 +484,7 @@ func (p *Plan) scan(opts PackOptions) error {
 				p.Manifest.Stats.Files++
 				p.Manifest.Stats.Bytes += info.Size()
 			default:
-				return fmt.Errorf("%s: unsupported file type %s (mpack archives regular files, directories and symlinks only)", src, info.Mode().Type())
+				return fmt.Errorf("%s: unsupported file type %s (ofpack archives regular files, directories and symlinks only)", src, info.Mode().Type())
 			}
 			p.entries = append(p.entries, e)
 			return nil
@@ -536,7 +536,7 @@ const (
 // classifyLink decides what to store for one symlink.
 //
 //	relative, stays inside the packed set -> stored verbatim
-//	absolute, inside the packed set       -> stored as @mpack-root@/<rel>
+//	absolute, inside the packed set       -> stored as @ofpack-root@/<rel>
 //	anything else                         -> unresolved
 func (p *Plan) classifyLink(src, rel, target string) (stored string, note LinkNote, kind linkKind, err error) {
 	if target == "" {
@@ -616,8 +616,8 @@ func (p *Plan) Write(w io.Writer) error {
 	return gz.Close()
 }
 
-// SetUnpacker attaches an mpack binary that runs on the archive's target
-// platform. It is stored as bin/mpack so the receiving machine can bootstrap
+// SetUnpacker attaches an ofpack binary that runs on the archive's target
+// platform. It is stored as bin/ofpack so the receiving machine can bootstrap
 // with nothing but tar.
 func (p *Plan) SetUnpacker(b []byte) {
 	p.unpacker = b

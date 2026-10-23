@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"os"

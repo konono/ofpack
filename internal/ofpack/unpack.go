@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -37,12 +37,12 @@ type UnpackOptions struct {
 	// SafeBase, when set, is a trusted ancestor of Dest: no existing symlink
 	// between it and Dest will be followed. It is set when Dest was derived
 	// from the archive's own manifest.
-	SafeBase  string
-	Policy    OverwritePolicy
-	SkipArch  bool
-	DryRun    bool
-	Log       io.Writer
-	MpackVers string
+	SafeBase   string
+	Policy     OverwritePolicy
+	SkipArch   bool
+	DryRun     bool
+	Log        io.Writer
+	OfpackVers string
 }
 
 // unit is one independently installable subtree of the archive.
@@ -56,13 +56,13 @@ type unit struct {
 }
 
 // DefaultDest reproduces the source project's home-relative location under
-// the current user's home and puts the toolchain in its .mpack subdirectory:
+// the current user's home and puts the toolchain in its .ofpack subdirectory:
 //
 //	packed   /Users/alice/work/myapp
-//	unpacked /home/bob/work/myapp/.mpack
+//	unpacked /home/bob/work/myapp/.ofpack
 //
-// Only the project's tooling is placed there; mpack archives never contain
-// project source files, and nothing outside .mpack is touched.
+// Only the project's tooling is placed there; ofpack archives never contain
+// project source files, and nothing outside .ofpack is touched.
 //
 // The archive supplies the relative path, so it is treated as untrusted input
 // and validated before use. If the project was packed from outside the home
@@ -93,7 +93,7 @@ func DefaultDestWithBase(m *Manifest) (dest, base string, err error) {
 		return "", "", err
 	}
 	home = filepath.Clean(home)
-	dest = filepath.Join(home, filepath.FromSlash(clean), MpackSubdir)
+	dest = filepath.Join(home, filepath.FromSlash(clean), OfpackSubdir)
 	// Belt and braces: the join above must not have escaped the home dir.
 	if !isUnder(home, dest) {
 		return "", "", fmt.Errorf("refusing default destination %q: it is outside %s (pass --dest DIR)", dest, home)
@@ -115,7 +115,7 @@ func ReadManifest(r io.Reader) (*Manifest, error) {
 		return nil, fmt.Errorf("reading archive: %w", err)
 	}
 	if hdr.Name != ManifestName {
-		return nil, fmt.Errorf("first archive entry is %q, want %q; not an mpack archive", hdr.Name, ManifestName)
+		return nil, fmt.Errorf("first archive entry is %q, want %q; not an ofpack archive", hdr.Name, ManifestName)
 	}
 	var m Manifest
 	if err := json.NewDecoder(io.LimitReader(tr, 1<<22)).Decode(&m); err != nil {
@@ -130,7 +130,7 @@ func ReadManifest(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-// supportedSchemas are the archive layouts this mpack can unpack in full.
+// supportedSchemas are the archive layouts this ofpack can unpack in full.
 var supportedSchemas = []int{SchemaVersion, SchemaVersionUV, SchemaVersionScoped}
 
 func checkSchema(schema int) error {
@@ -139,7 +139,25 @@ func checkSchema(schema int) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("archive schema %d is not supported by this mpack (it understands %v); a newer mpack can unpack it, and unpacking it with this one would silently leave parts out",
+	if schema > 0 && schema <= legacyMaxSchema {
+		// Produced by mpack, the name this tool had before. The layout
+		// changed with the rename, so unpacking it here would install a tree
+		// that is subtly not what the archive describes.
+		return fmt.Errorf(`archive schema %d was produced by mpack, the name this tool had before it became ofpack.
+
+The layout changed with the rename - the bundled unpacker is bin/ofpack where mpack wrote bin/mpack - so this archive is not an ofpack archive and is refused rather than unpacked in part. Either:
+
+  - unpack it with mpack. Unless the archive was packed with --no-unpacker it
+    carries one, so check before relying on it:
+      mkdir -p /tmp/mpack-boot
+      tar -xzf ARCHIVE -C /tmp/mpack-boot bin/mpack
+      /tmp/mpack-boot/bin/mpack unpack -f ARCHIVE
+    If there is no bin/mpack in it, supply an mpack binary yourself.
+
+  - or re-pack the source with ofpack, which produces schema %d and up`,
+			schema, SchemaVersion)
+	}
+	return fmt.Errorf("archive schema %d is not supported by this ofpack (it understands %v); a newer ofpack can unpack it, and unpacking it with this one would silently leave parts out",
 		schema, supportedSchemas)
 }
 
@@ -357,7 +375,7 @@ func Unpack(archive io.Reader, opts UnpackOptions) (*Manifest, error) {
 		return nil, fmt.Errorf("reading archive: %w", err)
 	}
 	if hdr.Name != ManifestName {
-		return nil, fmt.Errorf("first archive entry is %q, want %q; not an mpack archive", hdr.Name, ManifestName)
+		return nil, fmt.Errorf("first archive entry is %q, want %q; not an ofpack archive", hdr.Name, ManifestName)
 	}
 	var m Manifest
 	if err := json.NewDecoder(io.LimitReader(tr, 1<<22)).Decode(&m); err != nil {
@@ -418,7 +436,7 @@ func Unpack(archive io.Reader, opts UnpackOptions) (*Manifest, error) {
 	if err := ensureDestDir(dest, opts.SafeBase); err != nil {
 		return nil, err
 	}
-	staging, err := os.MkdirTemp(dest, ".mpack-staging-")
+	staging, err := os.MkdirTemp(dest, ".ofpack-staging-")
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +517,7 @@ func extract(tr *tar.Reader, staging, destInstallsRoot string, skip map[string]b
 				return err
 			}
 		default:
-			return fmt.Errorf("archive entry %q has unsupported type %q; mpack only extracts regular files, directories and symlinks", name, string(hdr.Typeflag))
+			return fmt.Errorf("archive entry %q has unsupported type %q; ofpack only extracts regular files, directories and symlinks", name, string(hdr.Typeflag))
 		}
 		if !hdr.ModTime.IsZero() && hdr.Typeflag != tar.TypeSymlink {
 			_ = os.Chtimes(full, hdr.ModTime, hdr.ModTime)
@@ -613,7 +631,7 @@ func (t *moveTx) run(units []unit, staging string, skip map[string]bool, opts Un
 
 func (t *moveTx) stash(dst string) (string, error) {
 	if t.backupDir == "" {
-		dir, err := os.MkdirTemp(t.dest, ".mpack-backup-")
+		dir, err := os.MkdirTemp(t.dest, ".ofpack-backup-")
 		if err != nil {
 			return "", err
 		}
@@ -663,24 +681,24 @@ func (t *moveTx) commit() error {
 // configuration than the archive carries. Every MISE_* the caller happens to
 // have is dropped, then only what the snapshot needs is set.
 func miseEnvPreamble(rootExpr string) string {
-	return miseEnvPreambleForConfig(rootExpr, `"$MPACK_ROOT/config"`)
+	return miseEnvPreambleForConfig(rootExpr, `"$OFPACK_ROOT/config"`)
 }
 
 func miseEnvPreambleForConfig(rootExpr, configExpr string) string {
 	globalExpr := `"$MISE_CONFIG_DIR/config.toml"`
-	if configExpr == `"$MPACK_ROOT/config"` {
-		globalExpr = `"$MPACK_ROOT/config/config.toml"`
+	if configExpr == `"$OFPACK_ROOT/config"` {
+		globalExpr = `"$OFPACK_ROOT/config/config.toml"`
 	}
-	return fmt.Sprintf(`MPACK_ROOT=%s
+	return fmt.Sprintf(`OFPACK_ROOT=%s
 
 # Drop any inherited MISE_* so nothing redirects mise away from the snapshot.
 # Names only; no value is read or printed.
-for _mpack_var in $(env | sed -n 's/^\(MISE_[A-Za-z0-9_]*\)=.*/\1/p'); do
-  unset "$_mpack_var"
+for _ofpack_var in $(env | sed -n 's/^\(MISE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$_ofpack_var"
 done
-unset _mpack_var
+unset _ofpack_var
 
-export MISE_DATA_DIR="$MPACK_ROOT"
+export MISE_DATA_DIR="$OFPACK_ROOT"
 export MISE_CONFIG_DIR=%s
 # Set explicitly: this one wins over MISE_CONFIG_DIR, so leaving it unset
 # would let a stray value in the environment take over.
@@ -697,7 +715,7 @@ export MISE_OFFLINE=1
 func ActivateScript(dest string) string {
 	q := shellQuote(dest)
 	return fmt.Sprintf(`#!/bin/sh
-# Generated by mpack on %s.
+# Generated by ofpack on %s.
 # Source this file; do not execute it:
 #   bash/zsh:  source %s/`+ActivateName+`
 #   sh/dash:   . %s/`+ActivateName+`
@@ -706,7 +724,7 @@ func ActivateScript(dest string) string {
 # why they are exported here rather than passed on the mise command line.
 
 %s
-export PATH="$MPACK_ROOT/bin:$PATH"
+export PATH="$OFPACK_ROOT/bin:$PATH"
 
 # Put the tools on PATH right now. "mise activate" alone is not enough: its
 # hook only runs on the next prompt, so a non-interactive shell would silently
@@ -717,13 +735,13 @@ export PATH="$MPACK_ROOT/bin:$PATH"
 # the current directory or above it, which describes the machine the archive
 # came from.
 # Captured rather than eval'd inline so a failure is not thrown away.
-if ! _mpack_env="$("$MPACK_ROOT/bin/mise" -C / env -s bash)"; then
-  echo "mpack: $MPACK_ROOT/bin/mise could not produce the environment." >&2
-  unset _mpack_env
+if ! _ofpack_env="$("$OFPACK_ROOT/bin/mise" -C / env -s bash)"; then
+  echo "ofpack: $OFPACK_ROOT/bin/mise could not produce the environment." >&2
+  unset _ofpack_env
   return 1 2>/dev/null || exit 1
 fi
-eval "$_mpack_env"
-unset _mpack_env
+eval "$_ofpack_env"
+unset _ofpack_env
 `, time.Now().UTC().Format(time.RFC3339), q, q, miseEnvPreamble(q))
 }
 
@@ -734,7 +752,7 @@ unset _mpack_env
 // would be a second mechanism fighting over the same variables.
 func DirenvScript(dest string) string {
 	q := shellQuote(dest)
-	return fmt.Sprintf(`# Generated by mpack on %s. Sourced from a project's .envrc:
+	return fmt.Sprintf(`# Generated by ofpack on %s. Sourced from a project's .envrc:
 #
 #     source_env %s/`+DirenvName+`
 #
@@ -744,15 +762,15 @@ func DirenvScript(dest string) string {
 
 # direnv changes into the directory of the file it sources, so $PWD is this
 # tree. Deriving the root instead of baking it in keeps the project movable:
-# copy or rename it and the .envrc still finds its own .mpack.
+# copy or rename it and the .envrc still finds its own .ofpack.
 %s
 # Failures here exit rather than return. "return" would merely end this file
 # and let the calling .envrc carry on, leaving direnv to apply whatever had
 # been exported so far - a half-built environment reported as success.
-if [ ! -x "$MPACK_ROOT/bin/mise" ]; then
-  echo "mpack: $MPACK_ROOT does not contain bin/mise." >&2
-  echo "mpack: this file must be loaded with direnv's source_env, which runs it" >&2
-  echo "mpack: from its own directory. For manual use source `+ActivateName+` instead." >&2
+if [ ! -x "$OFPACK_ROOT/bin/mise" ]; then
+  echo "ofpack: $OFPACK_ROOT does not contain bin/mise." >&2
+  echo "ofpack: this file must be loaded with direnv's source_env, which runs it" >&2
+  echo "ofpack: from its own directory. For manual use source `+ActivateName+` instead." >&2
   exit 1
 fi
 
@@ -763,19 +781,19 @@ fi
 # away, so a mise that failed would leave the environment untouched and the
 # rest of this file would carry on adding directories to PATH as if it had
 # worked.
-if ! _mpack_env="$("$MPACK_ROOT/bin/mise" -C / env -s bash)"; then
-  echo "mpack: $MPACK_ROOT/bin/mise could not produce the environment." >&2
-  echo "mpack: not loading a partial toolchain; the directory is left as it was." >&2
+if ! _ofpack_env="$("$OFPACK_ROOT/bin/mise" -C / env -s bash)"; then
+  echo "ofpack: $OFPACK_ROOT/bin/mise could not produce the environment." >&2
+  echo "ofpack: not loading a partial toolchain; the directory is left as it was." >&2
   exit 1
 fi
-eval "$_mpack_env"
-unset _mpack_env
+eval "$_ofpack_env"
+unset _ofpack_env
 
-# mise and mpack themselves, for "mise ls" and a later "mpack unpack".
-PATH_add "$MPACK_ROOT/bin"
+# mise and ofpack themselves, for "mise ls" and a later "ofpack unpack".
+PATH_add "$OFPACK_ROOT/bin"
 
 # Re-evaluate when the unpacked tree is replaced.
-watch_file "$MPACK_ROOT/`+InstalledManifestName+`"
+watch_file "$OFPACK_ROOT/`+InstalledManifestName+`"
 `, time.Now().UTC().Format(time.RFC3339), q, miseEnvPreamble(`"$PWD"`))
 }
 
@@ -787,22 +805,22 @@ func ScopedDirenvScript(dest, rel string) string {
 	up := strings.Repeat("../", depth)
 	configRel := path.Join("config", "scopes", rel)
 	rootExpr := "$(cd \"$PWD/" + up + "\" && pwd -P)"
-	configExpr := `"$MPACK_ROOT/"` + shellQuote(configRel)
-	return fmt.Sprintf(`# Generated by mpack for scope %s. Load through direnv source_env.
+	configExpr := `"$OFPACK_ROOT/"` + shellQuote(configRel)
+	return fmt.Sprintf(`# Generated by ofpack for scope %s. Load through direnv source_env.
 # This file evaluates in its own directory, so its paths remain movable.
 %s
-if [ ! -x "$MPACK_ROOT/bin/mise" ]; then
-  echo "mpack: scoped toolchain has no bin/mise at $MPACK_ROOT" >&2
+if [ ! -x "$OFPACK_ROOT/bin/mise" ]; then
+  echo "ofpack: scoped toolchain has no bin/mise at $OFPACK_ROOT" >&2
   exit 1
 fi
-if ! _mpack_env="$("$MPACK_ROOT/bin/mise" -C / env -s bash)"; then
-  echo "mpack: scoped mise environment failed for %s" >&2
+if ! _ofpack_env="$("$OFPACK_ROOT/bin/mise" -C / env -s bash)"; then
+  echo "ofpack: scoped mise environment failed for %s" >&2
   exit 1
 fi
-eval "$_mpack_env"
-unset _mpack_env
-PATH_add "$MPACK_ROOT/bin"
-watch_file "$MPACK_ROOT/%s"
+eval "$_ofpack_env"
+unset _ofpack_env
+PATH_add "$OFPACK_ROOT/bin"
+watch_file "$OFPACK_ROOT/%s"
 watch_file "$MISE_GLOBAL_CONFIG_FILE"
 `, rel, miseEnvPreambleForConfig(rootExpr, configExpr), rel, InstalledManifestName)
 }

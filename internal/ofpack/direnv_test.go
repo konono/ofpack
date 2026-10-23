@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"bytes"
@@ -14,16 +14,16 @@ import (
 // The direnv file must not install a mise shell hook: direnv evaluates it in
 // its own process and manages entering and leaving the directory itself.
 func TestDirenvScriptInstallsNoShellHook(t *testing.T) {
-	script := DirenvScript("/home/bob/work/myapp/.mpack")
+	script := DirenvScript("/home/bob/work/myapp/.ofpack")
 	if strings.Contains(script, "mise\" activate") || strings.Contains(script, "mise activate") {
 		t.Errorf("the direnv file installs a mise hook, which would fight direnv:\n%s", script)
 	}
 	for _, want := range []string{
-		`export MISE_DATA_DIR="$MPACK_ROOT"`,
-		`export MISE_CONFIG_DIR="$MPACK_ROOT/config"`,
+		`export MISE_DATA_DIR="$OFPACK_ROOT"`,
+		`export MISE_CONFIG_DIR="$OFPACK_ROOT/config"`,
 		`export MISE_OFFLINE=1`,
 		`-C / env -s bash`,
-		`PATH_add "$MPACK_ROOT/bin"`,
+		`PATH_add "$OFPACK_ROOT/bin"`,
 		"watch_file",
 	} {
 		if !strings.Contains(script, want) {
@@ -37,13 +37,13 @@ func TestDirenvScriptInstallsNoShellHook(t *testing.T) {
 // variable themselves, or the snapshot silently loads someone else's config.
 func TestGeneratedScriptsPinConfigAgainstInheritedOverrides(t *testing.T) {
 	for name, script := range map[string]string{
-		DirenvName:   DirenvScript("/home/bob/work/myapp/.mpack"),
-		ActivateName: ActivateScript("/home/bob/work/myapp/.mpack"),
+		DirenvName:   DirenvScript("/home/bob/work/myapp/.ofpack"),
+		ActivateName: ActivateScript("/home/bob/work/myapp/.ofpack"),
 	} {
-		if !strings.Contains(script, `unset "$_mpack_var"`) {
+		if !strings.Contains(script, `unset "$_ofpack_var"`) {
 			t.Errorf("%s does not clear inherited MISE_* variables:\n%s", name, script)
 		}
-		if !strings.Contains(script, `export MISE_GLOBAL_CONFIG_FILE="$MPACK_ROOT/config/config.toml"`) {
+		if !strings.Contains(script, `export MISE_GLOBAL_CONFIG_FILE="$OFPACK_ROOT/config/config.toml"`) {
 			t.Errorf("%s does not pin MISE_GLOBAL_CONFIG_FILE, so an inherited one would win:\n%s", name, script)
 		}
 		if !strings.Contains(script, "-C / env -s bash") {
@@ -81,7 +81,7 @@ func unpackedTree(t *testing.T, dir string, tools ...Tool) {
 
 func TestPlanDirenvUsesTheConventionalDestination(t *testing.T) {
 	project := t.TempDir()
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	unpackedTree(t, dest, Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 
 	plan, err := PlanDirenv(project, "")
@@ -93,7 +93,7 @@ func TestPlanDirenvUsesTheConventionalDestination(t *testing.T) {
 	}
 	// A destination inside the project is referenced relatively, so the
 	// .envrc survives the project being moved.
-	if want := "source_env '.mpack/direnv.envrc'"; plan.Line != want {
+	if want := "source_env '.ofpack/direnv.envrc'"; plan.Line != want {
 		t.Errorf("line = %q, want %q", plan.Line, want)
 	}
 }
@@ -101,11 +101,11 @@ func TestPlanDirenvUsesTheConventionalDestination(t *testing.T) {
 func TestPlanDirenvRejectsSomethingThatIsNotAnUnpackedTree(t *testing.T) {
 	project := t.TempDir()
 	if _, err := PlanDirenv(project, ""); err == nil || !strings.Contains(err.Error(), "unpack an archive first") {
-		t.Fatalf("a project with no .mpack should say so, got %v", err)
+		t.Fatalf("a project with no .ofpack should say so, got %v", err)
 	}
 	empty := t.TempDir()
 	_, err := PlanDirenv(project, empty)
-	if err == nil || !strings.Contains(err.Error(), "does not look like an unpacked mpack directory") {
+	if err == nil || !strings.Contains(err.Error(), "does not look like an unpacked ofpack directory") {
 		t.Fatalf("a bogus --dest should be rejected, got %v", err)
 	}
 	if _, err := PlanDirenv(filepath.Join(project, "nope"), ""); err == nil {
@@ -121,14 +121,14 @@ func TestPlanDirenvQuotesPathsWithSpaces(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	inside := filepath.Join(project, MpackSubdir)
+	inside := filepath.Join(project, OfpackSubdir)
 	unpackedTree(t, inside, Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 
 	plan, err := PlanDirenv(project, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "source_env '.mpack/direnv.envrc'"; plan.Line != want {
+	if want := "source_env '.ofpack/direnv.envrc'"; plan.Line != want {
 		t.Errorf("line = %q, want %q", plan.Line, want)
 	}
 	if err := plan.WriteEnvrc(); err != nil {
@@ -156,11 +156,11 @@ func TestPlanDirenvQuotesPathsWithSpaces(t *testing.T) {
 	}
 }
 
-// A project's .envrc belongs to the user: mpack prints the line to add rather
+// A project's .envrc belongs to the user: ofpack prints the line to add rather
 // than editing or appending to it.
 func TestDirenvInitLeavesAnExistingEnvrcAlone(t *testing.T) {
 	project := t.TempDir()
-	unpackedTree(t, filepath.Join(project, MpackSubdir), Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
+	unpackedTree(t, filepath.Join(project, OfpackSubdir), Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 	envrc := filepath.Join(project, EnvrcName)
 	original := "export MY_OWN=1\nlayout python\n"
 	if err := os.WriteFile(envrc, []byte(original), 0o644); err != nil {
@@ -188,7 +188,7 @@ func TestDirenvInitLeavesAnExistingEnvrcAlone(t *testing.T) {
 
 func TestDirenvInitWritesAMinimalEnvrcWhenThereIsNone(t *testing.T) {
 	project := t.TempDir()
-	unpackedTree(t, filepath.Join(project, MpackSubdir), Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
+	unpackedTree(t, filepath.Join(project, OfpackSubdir), Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 	plan, err := PlanDirenv(project, "")
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestDirenvSidecarGoesThroughTheUnpackTransaction(t *testing.T) {
 }
 
 // Isolating a snapshot from every config mise might read cannot be asserted
-// in the abstract, so mpack measures it. The check has to notice a
+// in the abstract, so ofpack measures it. The check has to notice a
 // difference, not just report success.
 func TestCheckSnapshotNoticesAMismatch(t *testing.T) {
 	dest := t.TempDir()
@@ -374,12 +374,12 @@ done
 // sources it from its own directory, so deriving the root keeps a moved or
 // cloned project working.
 func TestDirenvScriptDerivesItsOwnRoot(t *testing.T) {
-	dest := "/home/bob/work/myapp/.mpack"
+	dest := "/home/bob/work/myapp/.ofpack"
 	script := DirenvScript(dest)
-	if !strings.Contains(script, `MPACK_ROOT="$PWD"`) {
+	if !strings.Contains(script, `OFPACK_ROOT="$PWD"`) {
 		t.Errorf("the root is not derived at evaluation time:\n%s", script)
 	}
-	if !strings.Contains(script, `watch_file "$MPACK_ROOT/`+InstalledManifestName+`"`) {
+	if !strings.Contains(script, `watch_file "$OFPACK_ROOT/`+InstalledManifestName+`"`) {
 		t.Errorf("watch_file does not use the derived root:\n%s", script)
 	}
 	// The generated path may appear in comments, but nothing executable may
@@ -401,7 +401,7 @@ func TestDirenvScriptDerivesItsOwnRoot(t *testing.T) {
 }
 
 // stubMiseTree is an unpacked tree whose mise answers both of the commands
-// mpack relies on: the tool listing, and the environment itself. envExit
+// ofpack relies on: the tool listing, and the environment itself. envExit
 // makes the environment command fail, which is the interesting case - a mise
 // that lists tools happily but cannot produce an environment.
 func stubMiseTree(t *testing.T, dir, listJSON string, envExit int, tools ...Tool) {
@@ -455,7 +455,7 @@ func TestCheckSnapshotTreatsUninstalledAsMissing(t *testing.T) {
 // endorsement, and it must not be given for an environment that is wrong.
 func TestInitDirenvWritesNothingWhenTheEnvironmentDoesNotMatch(t *testing.T) {
 	project := t.TempDir()
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	stubMiseTree(t, dest, `{"node":[{"version":"22.1.0","active":true,"installed":true}]}`, 0,
 		Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 
@@ -486,7 +486,7 @@ func TestInitDirenvWritesNothingWhenTheEnvironmentDoesNotMatch(t *testing.T) {
 // The same applies when the check cannot be run at all.
 func TestInitDirenvWritesNothingWhenTheCheckFails(t *testing.T) {
 	project := t.TempDir()
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	unpackedTree(t, dest, Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 	// A mise that cannot run.
 	if err := os.WriteFile(filepath.Join(dest, filepath.FromSlash(MiseBinName)), []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
@@ -510,7 +510,7 @@ func TestInitDirenvWritesNothingWhenTheCheckFails(t *testing.T) {
 // The happy path still writes, and reports the check as clean.
 func TestInitDirenvWritesWhenTheEnvironmentMatches(t *testing.T) {
 	project := t.TempDir()
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	stubMiseTree(t, dest, `{"jq":[{"version":"1.8.1","active":true,"installed":true}]}`, 0,
 		Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
 
@@ -539,7 +539,7 @@ func TestInitDirenvWritesWhenTheEnvironmentMatches(t *testing.T) {
 // has to exercise the environment command itself and refuse.
 func TestInitDirenvRefusesWhenMiseCanListButNotBuildTheEnvironment(t *testing.T) {
 	project := t.TempDir()
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	// Exactly the archive's tools from `ls`, but `env` exits 42.
 	stubMiseTree(t, dest, `{"jq":[{"version":"1.8.1","active":true,"installed":true}]}`, 42,
 		Tool{Name: "jq", Version: "1.8.1", RelPath: "jq/1.8.1"})
@@ -687,14 +687,14 @@ case "$PATH" in /stub/bin:*) echo PATH_OK ;; *) echo "PATH not applied: $PATH" ;
 // exits and the whole evaluation is discarded; activate.sh is sourced by the
 // user's interactive shell, where exiting would close their terminal.
 func TestGeneratedScriptsUseTheRightFailureAction(t *testing.T) {
-	direnv := DirenvScript("/home/bob/work/myapp/.mpack")
+	direnv := DirenvScript("/home/bob/work/myapp/.ofpack")
 	if strings.Contains(direnv, "return 1") {
 		t.Errorf("direnv.envrc returns on failure; it must exit so direnv discards the evaluation:\n%s", direnv)
 	}
 	if strings.Count(direnv, "exit 1") < 2 {
 		t.Errorf("direnv.envrc should exit on both failure paths:\n%s", direnv)
 	}
-	activate := ActivateScript("/home/bob/work/myapp/.mpack")
+	activate := ActivateScript("/home/bob/work/myapp/.ofpack")
 	if !strings.Contains(activate, "return 1 2>/dev/null || exit 1") {
 		t.Errorf("activate.sh must return when sourced, not close the user's shell:\n%s", activate)
 	}

@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -56,7 +56,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MPACK_MISE_BIN", bin)
+	t.Setenv("OFPACK_MISE_BIN", bin)
 	plan, err := BuildPlan(PackOptions{WorkDir: root, Version: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ esac
 
 func TestDiscoverMiseScopesSkipsGeneratedTrees(t *testing.T) {
 	root := t.TempDir()
-	for _, rel := range []string{"app", ".venv/lib", ".mpack/config", "node_modules/pkg"} {
+	for _, rel := range []string{"app", ".venv/lib", ".ofpack/config", "node_modules/pkg"} {
 		dir := filepath.Join(root, rel)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)

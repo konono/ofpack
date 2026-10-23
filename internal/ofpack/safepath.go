@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"fmt"
@@ -12,9 +12,9 @@ import (
 // original target was an absolute path inside the source installs root. On
 // unpack it is replaced by the destination installs root so the link keeps
 // working after relocation.
-const RootSentinel = "@mpack-root@"
+const RootSentinel = "@ofpack-root@"
 
-// CheckArchiveName validates a path as it appears inside an mpack archive.
+// CheckArchiveName validates a path as it appears inside an ofpack archive.
 // Archive paths are always slash separated, relative and free of "." / ".."
 // components. Anything else is rejected before it can reach the filesystem.
 func CheckArchiveName(name string) (string, error) {

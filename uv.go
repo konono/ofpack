@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"mpack/internal/mpack"
+	"ofpack/internal/ofpack"
 )
 
 // uvPack packs a uv Python project: the target's Python and uv, plus every
@@ -15,34 +15,34 @@ import (
 // with no network. Neither the project tree nor the .venv on this machine
 // goes into the archive - a .venv holds host-native binaries and absolute
 // paths, and would not work on the other side even if it were copied.
-func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine, mpackBin string,
+func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine, ofpackBin string,
 	noUnpacker, printOnly, dryRun bool) error {
 
 	packRoot, err := filepath.Abs(projectDir)
 	if err != nil {
 		return err
 	}
-	projectDir, err = mpack.FindUVProject(packRoot)
+	projectDir, err = ofpack.FindUVProject(packRoot)
 	if err != nil {
 		return err
 	}
-	source, err := mpack.ReadUVProject(projectDir)
+	source, err := ofpack.ReadUVProject(projectDir)
 	if err != nil {
 		return err
 	}
-	requires := mpack.RequiresPython(source)
+	requires := ofpack.RequiresPython(source)
 	pythonSource := "--python"
 	readMise := false
 	if pythonSpec == "" {
 		var configSource string
-		pythonSpec, configSource, readMise, err = mpack.ScopedMisePython(packRoot, projectDir)
+		pythonSpec, configSource, readMise, err = ofpack.ScopedMisePython(packRoot, projectDir)
 		if err != nil {
 			return err
 		}
 		if pythonSpec != "" {
-			pythonSource = configSource + " " + mpack.PythonSelectorLabel(configSource)
+			pythonSource = configSource + " " + ofpack.PythonSelectorLabel(configSource)
 			if pythonSpec == "latest" {
-				floor, floorErr := mpack.PythonFloorForLatest(requires)
+				floor, floorErr := ofpack.PythonFloorForLatest(requires)
 				if floorErr != nil {
 					return floorErr
 				}
@@ -53,7 +53,7 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 			}
 		} else {
 			// A project constraint is more relevant than a machine-wide default.
-			floor, floorErr := mpack.PythonFloorForLatest(requires)
+			floor, floorErr := ofpack.PythonFloorForLatest(requires)
 			if floorErr != nil {
 				return floorErr
 			}
@@ -61,7 +61,7 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 				pythonSpec = floor
 				pythonSource = "pyproject.toml requires-python lower bound"
 			} else {
-				pythonSpec, configSource, err = mpack.GlobalMisePython()
+				pythonSpec, configSource, err = ofpack.GlobalMisePython()
 				if err != nil {
 					return err
 				}
@@ -71,14 +71,14 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 				pythonSource = configSource + " [tools].python (global fallback)"
 			}
 		}
-	} else if ok, why := mpack.PythonSatisfies(pythonSpec, requires); !ok {
+	} else if ok, why := ofpack.PythonSatisfies(pythonSpec, requires); !ok {
 		// A version chosen by hand must still be one the project accepts,
 		// or the archive would carry an interpreter it cannot run on.
 		return fmt.Errorf("--python %s conflicts with requires-python = %q in %s: %s",
 			pythonSpec, requires, "pyproject.toml", why)
 	}
-	if mpack.ConcretePythonVersion(pythonSpec) {
-		if ok, why := mpack.PythonSatisfies(pythonSpec, requires); !ok {
+	if ofpack.ConcretePythonVersion(pythonSpec) {
+		if ok, why := ofpack.PythonSatisfies(pythonSpec, requires); !ok {
 			return fmt.Errorf("%s selected Python %s, which conflicts with requires-python = %q: %s", pythonSource, pythonSpec, requires, why)
 		}
 	}
@@ -110,7 +110,7 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	if err != nil {
 		return err
 	}
-	plan, err := mpack.BuildCrossPlan(mpack.CrossOptions{
+	plan, err := ofpack.BuildCrossPlan(ofpack.CrossOptions{
 		Target:     target,
 		Image:      image,
 		ProjectDir: projectDir,
@@ -124,18 +124,18 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	}
 	if printOnly {
 		fmt.Println("# Installs a Python and uv for " + target + ", downloads the project's wheels,")
-		fmt.Println("# and streams a payload on stdout. mpack builds the archive from it afterwards.")
+		fmt.Println("# and streams a payload on stdout. ofpack builds the archive from it afterwards.")
 		fmt.Println(plan.CommandLine())
 		return nil
 	}
 
-	tmpDir, err := os.MkdirTemp(filepath.Dir(output), ".mpack-payload-")
+	tmpDir, err := os.MkdirTemp(filepath.Dir(output), ".ofpack-payload-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 	payload := filepath.Join(tmpDir, "payload.tar.gz")
-	if err := mpack.RunCross(plan, payload, os.Stderr); err != nil {
+	if err := ofpack.RunCross(plan, payload, os.Stderr); err != nil {
 		if pythonSpec == "latest" {
 			err = fmt.Errorf("the project mise config selected python=latest; the target's newest Python may be too new for the declared dependencies. If resolution or wheel download failed, pin a compatible minor with --python X.Y: %w", err)
 		} else if strings.Contains(pythonSource, "requires-python lower bound") || strings.HasPrefix(pythonSource, "the lower bound of pyproject.toml") {
@@ -147,7 +147,7 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 		return err
 	}
 
-	packPlan, err := mpack.BuildPlanFromPayload(payload, target, mpack.PackOptions{
+	packPlan, err := ofpack.BuildPlanFromPayload(payload, target, ofpack.PackOptions{
 		WorkDir: projectDir,
 		Version: version,
 		Log:     os.Stderr,
@@ -155,24 +155,24 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 	if err != nil {
 		return err
 	}
-	uvRecord, err := mpack.AttachUVProject(packPlan, source, payload)
+	uvRecord, err := ofpack.AttachUVProject(packPlan, source, payload)
 	if err != nil {
 		return err
 	}
-	if ok, why := mpack.PythonSatisfies(uvRecord.PythonVersion, requires); !ok {
+	if ok, why := ofpack.PythonSatisfies(uvRecord.PythonVersion, requires); !ok {
 		return fmt.Errorf("the resolved Python %s (%s) for %s does not satisfy requires-python = %q: %s. Choose a compatible --python X.Y", uvRecord.PythonVersion, pythonSource, target, requires, why)
 	}
 
 	// An archive that cannot actually be restored is the failure worth
 	// catching here rather than on the disconnected machine.
 	fmt.Fprintf(os.Stderr, "\n--- checking the closure installs with no network ---\n")
-	how, err := mpack.VerifyUVPayloadOffline(payload, engine, image, target, os.Stderr)
+	how, err := ofpack.VerifyUVPayloadOffline(payload, engine, image, target, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("the wheel closure did not install offline, so the archive would not restore: %w", err)
 	}
 	uvRecord.VerifiedOffline = how
 
-	if err := attachUnpacker(packPlan, target, mpackBin, builderImage, engine, noUnpacker); err != nil {
+	if err := attachUnpacker(packPlan, target, ofpackBin, builderImage, engine, noUnpacker); err != nil {
 		return err
 	}
 	reportPlan(packPlan)
@@ -185,26 +185,26 @@ func uvPack(target, outName, projectDir, pythonSpec, image, builderImage, engine
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "\nOn the disconnected machine:\n"+
-		"  tar -xzf %s -C /tmp/mpack-boot bin/mpack\n"+
-		"  /tmp/mpack-boot/bin/mpack unpack -f %s\n"+
-		"  cd <project> && /tmp/mpack-boot/bin/mpack uv restore\n",
+		"  tar -xzf %s -C /tmp/ofpack-boot bin/ofpack\n"+
+		"  /tmp/ofpack-boot/bin/ofpack unpack -f %s\n"+
+		"  cd <project> && /tmp/ofpack-boot/bin/ofpack uv restore\n",
 		filepath.Base(output), filepath.Base(output))
 	return nil
 }
 
 func cmdUV(args []string) error {
 	if len(args) == 0 || args[0] != "restore" {
-		return fmt.Errorf("usage: mpack uv restore [--dest DIR] [--force|--skip-existing]")
+		return fmt.Errorf("usage: ofpack uv restore [--dest DIR] [--force|--skip-existing]")
 	}
 	fs := flag.NewFlagSet("uv restore", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: mpack uv restore [flags]
+		fmt.Fprint(fs.Output(), `Usage: ofpack uv restore [flags]
 
 Builds the project's .venv from the wheels in an unpacked archive, with no
 network access. Run it from the project directory:
 
   cd ~/work/myapp
-  mpack uv restore
+  ofpack uv restore
 
 Nothing outside .venv is written, and an existing .venv is never replaced
 unless you ask for it. With --force the new environment is built and checked
@@ -214,7 +214,7 @@ Flags:
 `)
 		fs.PrintDefaults()
 	}
-	dest := fs.String("dest", "", "the unpacked mpack directory (default: ./"+mpack.MpackSubdir+")")
+	dest := fs.String("dest", "", "the unpacked ofpack directory (default: ./"+ofpack.OfpackSubdir+")")
 	force := fs.Bool("force", false, "replace an existing .venv, keeping it until the new one is built and checked")
 	skipExisting := fs.Bool("skip-existing", false, "leave an existing .venv completely alone")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -223,18 +223,18 @@ Flags:
 	if *force && *skipExisting {
 		return fmt.Errorf("--force and --skip-existing are mutually exclusive")
 	}
-	policy := mpack.OverwriteFail
+	policy := ofpack.OverwriteFail
 	switch {
 	case *force:
-		policy = mpack.OverwriteForce
+		policy = ofpack.OverwriteForce
 	case *skipExisting:
-		policy = mpack.OverwriteSkip
+		policy = ofpack.OverwriteSkip
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	venv, built, err := mpack.RestoreVenv(mpack.RestoreOptions{
+	venv, built, err := ofpack.RestoreVenv(ofpack.RestoreOptions{
 		Project: cwd, Dest: *dest, Policy: policy, Log: os.Stderr,
 	})
 	if err != nil {

@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -90,7 +90,7 @@ func TestRoundTripPreservesContentPermissionsAndLinks(t *testing.T) {
 	}
 
 	// The bundled mise binary, generated config and sidecars are in place.
-	for _, rel := range []string{"bin/mise", "config/config.toml", "activate.sh", "mpack-manifest.json"} {
+	for _, rel := range []string{"bin/mise", "config/config.toml", "activate.sh", "ofpack-manifest.json"} {
 		if _, err := os.Stat(filepath.Join(dest, rel)); err != nil {
 			t.Errorf("missing %s: %v", rel, err)
 		}
@@ -107,7 +107,7 @@ func TestRoundTripPreservesContentPermissionsAndLinks(t *testing.T) {
 			t.Errorf("activate.sh missing %q", want)
 		}
 	}
-	if strings.Contains(string(script), `"$MPACK_ROOT/bin/mise" activate `) {
+	if strings.Contains(string(script), `"$OFPACK_ROOT/bin/mise" activate `) {
 		t.Fatal("activate.sh must not install a dynamic mise hook")
 	}
 }
@@ -188,7 +188,7 @@ func TestUnpackOverwritePolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".mpack-") {
+		if strings.HasPrefix(e.Name(), ".ofpack-") {
 			t.Errorf("leftover temporary directory %s", e.Name())
 		}
 	}
@@ -230,7 +230,7 @@ func TestUnpackForceRollsBackOnFailure(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(dest)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".mpack-") {
+		if strings.HasPrefix(e.Name(), ".ofpack-") {
 			t.Errorf("leftover temporary directory %s", e.Name())
 		}
 	}
@@ -328,7 +328,7 @@ func TestUnpackRefusesToWriteThroughSymlink(t *testing.T) {
 	}
 }
 
-func TestReadManifestRejectsNonMpackArchive(t *testing.T) {
+func TestReadManifestRejectsNonOfpackArchive(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -353,7 +353,7 @@ func TestDefaultDestReproducesProjectPathUnderHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, "work/myapp", MpackSubdir); got != want {
+	if want := filepath.Join(home, "work/myapp", OfpackSubdir); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
@@ -387,7 +387,7 @@ func TestUnpackLeavesProjectFilesAlone(t *testing.T) {
 	}
 	archive := packToBytes(t, plan)
 
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	if _, err := Unpack(bytes.NewReader(archive), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestUnpackRefusesSymlinkedPathToDefaultDest(t *testing.T) {
 	}
 	archive := packToBytes(t, plan)
 
-	dest := filepath.Join(home, "work", "myapp", MpackSubdir)
+	dest := filepath.Join(home, "work", "myapp", OfpackSubdir)
 	_, err = Unpack(bytes.NewReader(archive), UnpackOptions{Dest: dest, SafeBase: home})
 	if err == nil {
 		t.Fatal("unpack followed a symlink on the way to the default destination")
@@ -572,5 +572,67 @@ func TestUnpackRefusesSymlinkedDest(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatal("files were written through the destination symlink")
+	}
+}
+
+// Archives made by mpack, the name this tool had before, use schema 1 to 3.
+// The rename moved the bundled unpacker from bin/mpack to bin/ofpack, so an
+// mpack archive is not an ofpack archive: unpacking one here would install a
+// tree that is quietly not what the archive describes. It is refused, and
+// the refusal says how to get at the contents.
+func TestLegacyMpackArchivesAreRefusedWithAnExplanation(t *testing.T) {
+	for schema := 1; schema <= legacyMaxSchema; schema++ {
+		err := checkSchema(schema)
+		if err == nil {
+			t.Fatalf("schema %d is an mpack archive and must not be accepted", schema)
+		}
+		// The bundled mpack is only there when the archive was not packed with
+		// --no-unpacker, so the advice has to say so rather than promise it.
+		for _, want := range []string{"mpack", "bin/ofpack", "bin/mpack", "re-pack", "--no-unpacker"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("schema %d: the refusal should mention %q:\n%v", schema, want, err)
+			}
+		}
+	}
+
+	// Every schema ofpack writes is above the range mpack understood, so an
+	// mpack binary refuses an ofpack archive too rather than dropping the
+	// parts it does not know.
+	for _, s := range supportedSchemas {
+		if s <= legacyMaxSchema {
+			t.Errorf("schema %d overlaps the mpack range, so mpack would accept an ofpack archive", s)
+		}
+		if err := checkSchema(s); err != nil {
+			t.Errorf("ofpack must accept its own schema %d: %v", s, err)
+		}
+	}
+	// And an unknown future layout is still refused.
+	if err := checkSchema(SchemaVersionScoped + 1); err == nil {
+		t.Error("an unknown schema should be refused")
+	}
+}
+
+// The refusal has to happen before anything is written, so a legacy archive
+// cannot leave a half-populated destination behind.
+func TestLegacyArchiveWritesNothing(t *testing.T) {
+	root := fakeSource(t, "node/22.1.0")
+	plan, err := fakePlan(t, root, false, "node/22.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Manifest.Schema = legacyMaxSchema // as mpack would have written it
+	var buf bytes.Buffer
+	if err := plan.Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "out")
+	if _, err := Unpack(bytes.NewReader(buf.Bytes()), UnpackOptions{Dest: dest}); err == nil {
+		t.Fatal("a legacy archive was unpacked")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("the destination was created for a refused archive: %v", err)
+	}
+	if _, err := ReadManifest(bytes.NewReader(buf.Bytes())); err == nil {
+		t.Fatal("inspect accepted a legacy archive")
 	}
 }

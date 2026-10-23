@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ func scopedFixture(t *testing.T) []byte {
 
 func TestScopedUnpackGeneratesTransactionalChildFiles(t *testing.T) {
 	archive := scopedFixture(t)
-	dest := filepath.Join(t.TempDir(), ".mpack")
+	dest := filepath.Join(t.TempDir(), ".ofpack")
 	if _, err := Unpack(bytes.NewReader(archive), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestScopedManifestRejectsHostilePathsAndUnknownTools(t *testing.T) {
 func TestScopedUnpackReplacesLinkNotItsTarget(t *testing.T) {
 	archive := scopedFixture(t)
 	base := t.TempDir()
-	dest := filepath.Join(base, ".mpack")
+	dest := filepath.Join(base, ".ofpack")
 	configName := filepath.Join(dest, "config/scopes/app/config.toml")
 	if err := os.MkdirAll(filepath.Dir(configName), 0o755); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestScopedUnpackReplacesLinkNotItsTarget(t *testing.T) {
 
 func TestPlanDirenvSelectsDeepestScopedConfig(t *testing.T) {
 	projectRoot := t.TempDir()
-	dest := filepath.Join(projectRoot, MpackSubdir)
+	dest := filepath.Join(projectRoot, OfpackSubdir)
 	go24 := Tool{Name: "go", Version: "1.24.0", RelPath: "go/1.24.0"}
 	go25 := Tool{Name: "go", Version: "1.25.0", RelPath: "go/1.25.0"}
 	if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
@@ -159,7 +159,7 @@ func TestPlanDirenvSelectsDeepestScopedConfig(t *testing.T) {
 
 func TestCheckSnapshotScopePinsChildConfigAndTools(t *testing.T) {
 	archive := scopedFixture(t)
-	dest := filepath.Join(t.TempDir(), ".mpack")
+	dest := filepath.Join(t.TempDir(), ".ofpack")
 	if _, err := Unpack(bytes.NewReader(archive), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ esac
 
 func TestScopedDirenvScriptFindsMovedTree(t *testing.T) {
 	archive := scopedFixture(t)
-	dest := filepath.Join(t.TempDir(), "original", ".mpack")
+	dest := filepath.Join(t.TempDir(), "original", ".ofpack")
 	if _, err := Unpack(bytes.NewReader(archive), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestScopedDirenvScriptFindsMovedTree(t *testing.T) {
 	if err := os.Rename(filepath.Dir(dest), newBase); err != nil {
 		t.Fatal(err)
 	}
-	moved := filepath.Join(newBase, ".mpack")
+	moved := filepath.Join(newBase, ".ofpack")
 	stub := "#!/bin/sh\nprintf 'export PATH=%s\\n' \"'/stub/bin:$PATH'\"\n"
 	if err := os.WriteFile(filepath.Join(moved, filepath.FromSlash(MiseBinName)), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
@@ -232,7 +232,7 @@ func TestActivateScriptKeepsRootSelectionInsideChild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(child, "mise.toml"), []byte("[tools]\ngo = \"1.25.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dest := filepath.Join(project, MpackSubdir)
+	dest := filepath.Join(project, OfpackSubdir)
 	if _, err := Unpack(bytes.NewReader(scopedFixture(t)), UnpackOptions{Dest: dest}); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ esac
 	if err := os.WriteFile(filepath.Join(dest, MiseBinName), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", "-c", `PROMPT_COMMAND=; . ../.mpack/activate.sh; command -v go; cd ..; command -v go; printf 'prompt=%s\n' "$PROMPT_COMMAND"`)
+	cmd := exec.Command("bash", "-c", `PROMPT_COMMAND=; . ../.ofpack/activate.sh; command -v go; cd ..; command -v go; printf 'prompt=%s\n' "$PROMPT_COMMAND"`)
 	cmd.Dir = child
 	out, err := cmd.CombinedOutput()
 	if err != nil {

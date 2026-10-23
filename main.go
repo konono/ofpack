@@ -1,4 +1,4 @@
-// Command mpack packs the mise tools that are active in a directory into a
+// Command ofpack packs the mise tools that are active in a directory into a
 // single archive, so they can be carried to a disconnected machine and
 // unpacked there without any network access.
 package main
@@ -10,57 +10,57 @@ import (
 	"path/filepath"
 	"strings"
 
-	"mpack/internal/mpack"
+	"ofpack/internal/ofpack"
 )
 
 // version is overridable at build time: -ldflags "-X main.version=v1.2.3".
 var version = "dev"
 
-const usage = `mpack - carry a mise toolchain to a disconnected machine
+const usage = `ofpack - carry a mise toolchain to a disconnected machine
 
 Usage:
-  mpack pack    [flags]            Pack global plus this directory and descendant mise scopes
-  mpack unpack  -f ARCHIVE [flags] Unpack an archive (no network needed)
-  mpack inspect -f ARCHIVE         Show what an archive contains
-  mpack env     --dest DIR         Print the shell setup for an unpacked tree
-  mpack direnv  init [flags]       Hook a directory up to its packed mise scope
-  mpack uv      restore            Build a packed Python project's .venv, offline
-  mpack version
+  ofpack pack    [flags]            Pack global plus this directory and descendant mise scopes
+  ofpack unpack  -f ARCHIVE [flags] Unpack an archive (no network needed)
+  ofpack inspect -f ARCHIVE         Show what an archive contains
+  ofpack env     --dest DIR         Print the shell setup for an unpacked tree
+  ofpack direnv  init [flags]       Hook a directory up to its packed mise scope
+  ofpack uv      restore            Build a packed Python project's .venv, offline
+  ofpack version
 
 Typical flow:
   # on the connected machine
   cd ~/work/myapp
-  mpack pack -o myapp.mpack.tar.gz
+  ofpack pack -o myapp.ofpack.tar.gz
 
-  # one file to copy: an mpack for the target travels inside it
-  scp myapp.mpack.tar.gz user@host:~/
+  # one file to copy: an ofpack for the target travels inside it
+  scp myapp.ofpack.tar.gz user@host:~/
 
   # on the disconnected machine, from your home directory
-  mkdir -p /tmp/mpack-boot
-  tar -xzf myapp.mpack.tar.gz -C /tmp/mpack-boot bin/mpack
-  /tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz
-  source ~/work/myapp/.mpack/activate.sh
+  mkdir -p /tmp/ofpack-boot
+  tar -xzf myapp.ofpack.tar.gz -C /tmp/ofpack-boot bin/ofpack
+  /tmp/ofpack-boot/bin/ofpack unpack -f myapp.ofpack.tar.gz
+  source ~/work/myapp/.ofpack/activate.sh
 
-Extracting into a temporary directory avoids overwriting a bin/mpack of your
+Extracting into a temporary directory avoids overwriting a bin/ofpack of your
 own; the same binary is installed under the destination for later use.
 
 For automatic switching between projects, use direnv instead of sourcing by
 hand (direnv is an optional prerequisite and is not bundled):
   cd ~/work/myapp
-  mpack direnv init
+  ofpack direnv init
   direnv allow
 Do not also run "mise activate" in the same shell.
 
 A project outside your home directory has no default destination, so pass
 --dest when unpacking it:
-  /tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz --dest /work/myapp/.mpack
+  /tmp/ofpack-boot/bin/ofpack unpack -f myapp.ofpack.tar.gz --dest /work/myapp/.ofpack
 
 Targeting another OS needs no extra steps: the tools are installed in a
 Podman container of that platform, and the bundled unpacker is built for it
 too, so the archive is still the only file to copy:
   cd ~/work/myapp
-  mpack pack --target linux/amd64 -o myapp.linux-amd64.mpack.tar.gz
-  scp myapp.linux-amd64.mpack.tar.gz user@host:~/
+  ofpack pack --target linux/amd64 -o myapp.linux-amd64.ofpack.tar.gz
+  scp myapp.linux-amd64.ofpack.tar.gz user@host:~/
 
 Plain pack includes active tools from global configuration, this directory,
 and descendant mise scopes. Local configuration above this directory is
@@ -71,9 +71,9 @@ this directory and carries Python, uv and wheels. Python selection is:
 --python, then mise.toml from this directory to the Python project (nearest
 wins), then the requires-python lower bound, then global mise Python. A
 selector that conflicts with requires-python is rejected:
-  mpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
+  ofpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
 
-Run "mpack <command> -h" for the flags of a command.
+Run "ofpack <command> -h" for the flags of a command.
 `
 
 func main() {
@@ -96,15 +96,15 @@ func main() {
 	case "uv":
 		err = cmdUV(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("mpack", version)
+		fmt.Println("ofpack", version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "mpack: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "ofpack: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "mpack:", err)
+		fmt.Fprintln(os.Stderr, "ofpack:", err)
 		os.Exit(1)
 	}
 }
@@ -117,31 +117,31 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 func cmdPack(args []string) error {
 	fs := flag.NewFlagSet("pack", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: mpack pack [flags]
+		fmt.Fprint(fs.Output(), `Usage: ofpack pack [flags]
 
 Packs every installed tool active in the global configuration, the selected
 directory and its descendants. Local mise files above the selected directory
 are excluded. Each directory's tool version selection is preserved, together
-with mise and an mpack for the target platform.
+with mise and an ofpack for the target platform.
 
-  cd /work/myapp && mpack pack -o myapp.mpack.tar.gz
+  cd /work/myapp && ofpack pack -o myapp.ofpack.tar.gz
 
 Flags:
 `)
 		fs.PrintDefaults()
 	}
-	out := fs.String("o", "", "output archive (default \"<directory name>.mpack.tar.gz\")")
+	out := fs.String("o", "", "output archive (default \"<directory name>.ofpack.tar.gz\")")
 	dir := fs.String("C", "", "selected root for tool scopes or the pyproject.toml search (default: cwd)")
 	var exclude stringList
 	fs.Var(&exclude, "exclude", "mise tool name to leave out (repeatable)")
 	allowUnresolved := fs.Bool("allow-unresolved", false, "pack even if some symlinks cannot be relocated (they will be missing on the target)")
 	dryRun := fs.Bool("dry-run", false, "report what would be packed without writing an archive")
 	target := fs.String("target", "", "pack for another platform by installing the tools in a container, e.g. linux/amd64")
-	image := fs.String("image", "", "container image the tools are installed in for --target (default "+mpack.DefaultCrossImage+")")
-	builderImage := fs.String("builder-image", "", "container image used to build the bundled unpacker when this machine has no Go (default "+mpack.DefaultBuilderImage+")")
+	image := fs.String("image", "", "container image the tools are installed in for --target (default "+ofpack.DefaultCrossImage+")")
+	builderImage := fs.String("builder-image", "", "container image used to build the bundled unpacker when this machine has no Go (default "+ofpack.DefaultBuilderImage+")")
 	engine := fs.String("engine", "podman", "container engine for --target")
-	mpackBin := fs.String("mpack-bin", "", "use this prebuilt mpack as the bundled unpacker instead of building one")
-	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+mpack.UnpackerName+"; the target will need its own mpack")
+	ofpackBin := fs.String("ofpack-bin", "", "use this prebuilt ofpack as the bundled unpacker instead of building one")
+	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+ofpack.UnpackerName+"; the target will need its own ofpack")
 	uvProject := fs.Bool("uv-project", false, "pack a uv Python project: the target's Python, uv and a wheel closure, instead of this machine's mise tools")
 	pythonSpec := fs.String("python", "", "Python X.Y for --uv-project (overrides the project's own mise.toml; latest there uses the requires-python lower bound when present). Must satisfy requires-python")
 	printCommand := fs.Bool("print-command", false, "with --target, print the tool-installation container command (which streams a payload, not a finished archive) instead of running it")
@@ -167,22 +167,22 @@ Flags:
 
 	outName := *out
 	if outName == "" {
-		outName = filepath.Base(workDir) + ".mpack.tar.gz"
+		outName = filepath.Base(workDir) + ".ofpack.tar.gz"
 	}
 
 	if *uvProject {
 		if *target == "" {
 			return fmt.Errorf("--uv-project needs --target, for example --target linux/amd64:\nthe Python and the wheels have to be built for the machine that will use them")
 		}
-		return uvPack(*target, outName, workDir, *pythonSpec, *image, *builderImage, *engine, *mpackBin, *noUnpacker, *printCommand, *dryRun)
+		return uvPack(*target, outName, workDir, *pythonSpec, *image, *builderImage, *engine, *ofpackBin, *noUnpacker, *printCommand, *dryRun)
 	}
-	if *target != "" && *target != mpack.HostPlatform() {
-		return crossPack(*target, outName, workDir, *image, *builderImage, *engine, *mpackBin,
+	if *target != "" && *target != ofpack.HostPlatform() {
+		return crossPack(*target, outName, workDir, *image, *builderImage, *engine, *ofpackBin,
 			exclude, *allowUnresolved, *noUnpacker, *printCommand, *dryRun)
 	}
 
 	fmt.Fprintf(os.Stderr, "Packing the mise tools active in %s\n", workDir)
-	plan, err := mpack.BuildPlan(mpack.PackOptions{
+	plan, err := ofpack.BuildPlan(ofpack.PackOptions{
 		WorkDir:         workDir,
 		Exclude:         exclude,
 		AllowUnresolved: *allowUnresolved,
@@ -193,7 +193,7 @@ Flags:
 		return err
 	}
 
-	if err := attachUnpacker(plan, mpack.HostTarget(), *mpackBin, *builderImage, *engine, *noUnpacker); err != nil {
+	if err := attachUnpacker(plan, ofpack.HostTarget(), *ofpackBin, *builderImage, *engine, *noUnpacker); err != nil {
 		return err
 	}
 	reportPlan(plan)
@@ -209,16 +209,16 @@ Flags:
 	return writeArchive(plan, archivePath)
 }
 
-func crossPack(target, outName, workDir, image, builderImage, engine, mpackBin string, exclude []string, allowUnresolved, noUnpacker, printOnly, dryRun bool) error {
+func crossPack(target, outName, workDir, image, builderImage, engine, ofpackBin string, exclude []string, allowUnresolved, noUnpacker, printOnly, dryRun bool) error {
 	output, err := filepath.Abs(outName)
 	if err != nil {
 		return err
 	}
-	plan, err := mpack.BuildCrossPlan(mpack.CrossOptions{
+	plan, err := ofpack.BuildCrossPlan(ofpack.CrossOptions{
 		Target:          target,
 		Image:           image,
 		ProjectDir:      workDir,
-		GlobalConfigDir: mpack.DefaultGlobalConfigDir(),
+		GlobalConfigDir: ofpack.DefaultGlobalConfigDir(),
 		Output:          output,
 		Engine:          engine,
 		Exclude:         exclude,
@@ -232,26 +232,26 @@ func crossPack(target, outName, workDir, image, builderImage, engine, mpackBin s
 		// a finished archive: the archive is assembled here afterwards, from
 		// that payload.
 		fmt.Println("# Installs the tools for " + target + " and streams a payload on stdout.")
-		fmt.Println("# This is one step of the pack, not the whole of it: mpack builds the")
+		fmt.Println("# This is one step of the pack, not the whole of it: ofpack builds the")
 		fmt.Println("# archive from the payload afterwards. Printed for inspection.")
 		fmt.Println(plan.CommandLine())
 		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "Packing for %s in a container (host is %s).\nThe tools are installed inside the container, so the archive holds %s binaries.\n\n",
-		target, mpack.HostPlatform(), target)
+		target, ofpack.HostPlatform(), target)
 
-	tmpDir, err := os.MkdirTemp(filepath.Dir(output), ".mpack-payload-")
+	tmpDir, err := os.MkdirTemp(filepath.Dir(output), ".ofpack-payload-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 	payload := filepath.Join(tmpDir, "payload.tar.gz")
-	if err := mpack.RunCross(plan, payload, os.Stderr); err != nil {
+	if err := ofpack.RunCross(plan, payload, os.Stderr); err != nil {
 		return err
 	}
 
-	packPlan, err := mpack.BuildPlanFromPayload(payload, target, mpack.PackOptions{
+	packPlan, err := ofpack.BuildPlanFromPayload(payload, target, ofpack.PackOptions{
 		WorkDir:         workDir,
 		Exclude:         exclude,
 		AllowUnresolved: allowUnresolved,
@@ -261,7 +261,7 @@ func crossPack(target, outName, workDir, image, builderImage, engine, mpackBin s
 	if err != nil {
 		return err
 	}
-	if err := attachUnpacker(packPlan, target, mpackBin, builderImage, engine, noUnpacker); err != nil {
+	if err := attachUnpacker(packPlan, target, ofpackBin, builderImage, engine, noUnpacker); err != nil {
 		return err
 	}
 	reportPlan(packPlan)
@@ -272,37 +272,37 @@ func crossPack(target, outName, workDir, image, builderImage, engine, mpackBin s
 	return writeArchive(packPlan, output)
 }
 
-// attachUnpacker puts an mpack for the archive's own platform inside it.
-func attachUnpacker(plan *mpack.Plan, target, mpackBin, builderImage, engine string, noUnpacker bool) error {
+// attachUnpacker puts an ofpack for the archive's own platform inside it.
+func attachUnpacker(plan *ofpack.Plan, target, ofpackBin, builderImage, engine string, noUnpacker bool) error {
 	if noUnpacker {
 		return nil
 	}
-	if mpackBin != "" {
-		data, err := os.ReadFile(mpackBin)
+	if ofpackBin != "" {
+		data, err := os.ReadFile(ofpackBin)
 		if err != nil {
-			return fmt.Errorf("--mpack-bin: %w", err)
+			return fmt.Errorf("--ofpack-bin: %w", err)
 		}
 		// A binary that does not run on the target would break the one-file
 		// bootstrap, so one supplied by hand is checked as closely as one
-		// mpack builds itself.
-		if err := mpack.VerifyUnpacker(data, target); err != nil {
-			return fmt.Errorf("--mpack-bin %s is not an executable for %s: %w", mpackBin, target, err)
+		// ofpack builds itself.
+		if err := ofpack.VerifyUnpacker(data, target); err != nil {
+			return fmt.Errorf("--ofpack-bin %s is not an executable for %s: %w", ofpackBin, target, err)
 		}
 		plan.SetUnpacker(data)
 		return nil
 	}
-	if target == mpack.HostTarget() {
-		data, err := mpack.SelfBinary()
+	if target == ofpack.HostTarget() {
+		data, err := ofpack.SelfBinary()
 		if err != nil {
-			return fmt.Errorf("reading this mpack binary to carry along: %w", err)
+			return fmt.Errorf("reading this ofpack binary to carry along: %w", err)
 		}
-		if err := mpack.VerifyUnpacker(data, target); err != nil {
-			return fmt.Errorf("this mpack binary does not look like a %s executable: %w", target, err)
+		if err := ofpack.VerifyUnpacker(data, target); err != nil {
+			return fmt.Errorf("this ofpack binary does not look like a %s executable: %w", target, err)
 		}
 		plan.SetUnpacker(data)
 		return nil
 	}
-	data, err := mpack.UnpackerBuilder{
+	data, err := ofpack.UnpackerBuilder{
 		Source: embeddedSource(),
 		Image:  builderImage,
 		Engine: engine,
@@ -316,7 +316,7 @@ func attachUnpacker(plan *mpack.Plan, target, mpackBin, builderImage, engine str
 }
 
 // reportPlan prints the human summary of what is about to be archived.
-func reportPlan(plan *mpack.Plan) {
+func reportPlan(plan *ofpack.Plan) {
 	m := plan.Manifest
 	for _, t := range m.Tools {
 		fmt.Fprintf(os.Stderr, "  %-28s %s\n", t.Name, t.Version)
@@ -324,21 +324,21 @@ func reportPlan(plan *mpack.Plan) {
 	fmt.Fprintf(os.Stderr, "  mise %s (%s/%s), %d files, %d dirs, %d symlinks, %s\n",
 		m.MiseVersion, m.OS, m.Arch, m.Stats.Files, m.Stats.Dirs, m.Stats.Symlinks, humanBytes(m.Stats.Bytes))
 	if plan.HasUnpacker() {
-		fmt.Fprintf(os.Stderr, "  includes %s so the target needs only tar to bootstrap\n", mpack.UnpackerName)
+		fmt.Fprintf(os.Stderr, "  includes %s so the target needs only tar to bootstrap\n", ofpack.UnpackerName)
 	}
 	if n := len(m.DanglingLinks); n > 0 {
 		fmt.Fprintf(os.Stderr, "  note: %d symlink(s) already dangle on this machine; recorded in the manifest\n", n)
 	}
 	if len(m.EnvVarNames) > 0 {
-		fmt.Fprintf(os.Stderr, "  note: config sets %d env var(s) (%s); mpack records only their names, never their values\n",
+		fmt.Fprintf(os.Stderr, "  note: config sets %d env var(s) (%s); ofpack records only their names, never their values\n",
 			len(m.EnvVarNames), strings.Join(m.EnvVarNames, ", "))
 	}
 }
 
 // writeArchive writes the plan to target via a temporary file, so an
 // interrupted pack never leaves a half-written archive that looks usable.
-func writeArchive(plan *mpack.Plan, target string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".mpack-*.tmp")
+func writeArchive(plan *ofpack.Plan, target string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".ofpack-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -370,26 +370,26 @@ func writeArchive(plan *mpack.Plan, target string) error {
 func cmdUnpack(args []string) error {
 	fs := flag.NewFlagSet("unpack", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: mpack unpack -f ARCHIVE [flags]
+		fmt.Fprint(fs.Output(), `Usage: ofpack unpack -f ARCHIVE [flags]
 
 Unpacks an archive into a self contained mise data directory. No network
 access is performed or required.
 
-Archives carry an mpack for their own platform at bin/mpack, so on a machine
-without mpack you can bootstrap with tar alone:
-  mkdir -p /tmp/mpack-boot
-  tar -xzf ARCHIVE -C /tmp/mpack-boot bin/mpack
-  /tmp/mpack-boot/bin/mpack unpack -f ARCHIVE
+Archives carry an ofpack for their own platform at bin/ofpack, so on a machine
+without ofpack you can bootstrap with tar alone:
+  mkdir -p /tmp/ofpack-boot
+  tar -xzf ARCHIVE -C /tmp/ofpack-boot bin/ofpack
+  /tmp/ofpack-boot/bin/ofpack unpack -f ARCHIVE
 
 With no --dest, the source project's home-relative path is reproduced under
-your own home and the toolchain goes in its .mpack subdirectory, so
-/Users/alice/work/myapp becomes /home/bob/work/myapp/.mpack:
+your own home and the toolchain goes in its .ofpack subdirectory, so
+/Users/alice/work/myapp becomes /home/bob/work/myapp/.ofpack:
 
-  mpack unpack -f myapp.mpack.tar.gz
-  source ~/work/myapp/.mpack/activate.sh
+  ofpack unpack -f myapp.ofpack.tar.gz
+  source ~/work/myapp/.ofpack/activate.sh
 
 Archives contain the mise environment only, never project source files, and
-unpack writes nothing outside that .mpack directory. If the project was packed
+unpack writes nothing outside that .ofpack directory. If the project was packed
 from outside the home directory, --dest is required.
 
 Existing files are never replaced unless you ask for it: by default unpack
@@ -400,7 +400,7 @@ Flags:
 		fs.PrintDefaults()
 	}
 	file := fs.String("f", "", "archive to unpack (required)")
-	dest := fs.String("dest", "", "destination directory, becomes MISE_DATA_DIR (default: the source project's path under your home, plus /.mpack)")
+	dest := fs.String("dest", "", "destination directory, becomes MISE_DATA_DIR (default: the source project's path under your home, plus /.ofpack)")
 	force := fs.Bool("force", false, "replace existing paths (restored automatically if the unpack fails)")
 	skipExisting := fs.Bool("skip-existing", false, "keep existing paths and unpack only what is missing")
 	noArchCheck := fs.Bool("no-arch-check", false, "unpack even if the archive was built for another OS or CPU")
@@ -414,12 +414,12 @@ Flags:
 	if *force && *skipExisting {
 		return fmt.Errorf("--force and --skip-existing are mutually exclusive")
 	}
-	policy := mpack.OverwriteFail
+	policy := ofpack.OverwriteFail
 	switch {
 	case *force:
-		policy = mpack.OverwriteForce
+		policy = ofpack.OverwriteForce
 	case *skipExisting:
-		policy = mpack.OverwriteSkip
+		policy = ofpack.OverwriteSkip
 	}
 	f, err := os.Open(*file)
 	if err != nil {
@@ -432,11 +432,11 @@ Flags:
 	if absDest == "" {
 		// Reproduce the source project's home-relative path under this user's
 		// home; the manifest is read first so the default can be computed.
-		m, err := mpack.ReadManifest(f)
+		m, err := ofpack.ReadManifest(f)
 		if err != nil {
 			return err
 		}
-		absDest, safeBase, err = mpack.DefaultDestWithBase(m)
+		absDest, safeBase, err = ofpack.DefaultDestWithBase(m)
 		if err != nil {
 			return err
 		}
@@ -450,14 +450,14 @@ Flags:
 	}
 
 	fmt.Fprintf(os.Stderr, "Unpacking %s into %s\n", *file, absDest)
-	m, err := mpack.Unpack(f, mpack.UnpackOptions{
-		Dest:      absDest,
-		SafeBase:  safeBase,
-		Policy:    policy,
-		SkipArch:  *noArchCheck,
-		DryRun:    *dryRun,
-		Log:       os.Stderr,
-		MpackVers: version,
+	m, err := ofpack.Unpack(f, ofpack.UnpackOptions{
+		Dest:       absDest,
+		SafeBase:   safeBase,
+		Policy:     policy,
+		SkipArch:   *noArchCheck,
+		DryRun:     *dryRun,
+		Log:        os.Stderr,
+		OfpackVers: version,
 	})
 	if err != nil {
 		return err
@@ -469,10 +469,10 @@ Flags:
 	fmt.Fprintf(os.Stderr, "Installed mise %s and %d tool(s).\n\nNext:\n  source %s/activate.sh\n  mise ls --current\n",
 		m.MiseVersion, len(m.Tools), absDest)
 	if len(m.Scopes) > 1 {
-		fmt.Fprintln(os.Stderr, "For child directories, run 'mpack direnv init' there to select their packed versions.")
+		fmt.Fprintln(os.Stderr, "For child directories, run 'ofpack direnv init' there to select their packed versions.")
 	}
 	if len(m.EnvVarNames) > 0 {
-		fmt.Fprintf(os.Stderr, "\nThe source configuration also set these env vars, which mpack does not carry\n(their values may be secrets) - set them yourself if the tools need them:\n  %s\n",
+		fmt.Fprintf(os.Stderr, "\nThe source configuration also set these env vars, which ofpack does not carry\n(their values may be secrets) - set them yourself if the tools need them:\n  %s\n",
 			strings.Join(m.EnvVarNames, ", "))
 	}
 	return nil
@@ -492,16 +492,16 @@ func cmdInspect(args []string) error {
 		return err
 	}
 	defer f.Close()
-	m, err := mpack.ReadManifest(f)
+	m, err := ofpack.ReadManifest(f)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("packed:   %s by mpack %s\n", m.CreatedAt, m.MpackVersion)
+	fmt.Printf("packed:   %s by ofpack %s\n", m.CreatedAt, m.OfpackVersion)
 	fmt.Printf("platform: %s/%s\n", m.OS, m.Arch)
 	fmt.Printf("mise:     %s\n", m.MiseVersion)
 	if m.HomeRelativeProjectPath != "" {
 		fmt.Printf("project:  ~/%s\n", m.HomeRelativeProjectPath)
-		if d, err := mpack.DefaultDest(m); err == nil {
+		if d, err := ofpack.DefaultDest(m); err == nil {
 			fmt.Printf("default destination here: %s\n", d)
 		}
 	} else {
@@ -529,7 +529,7 @@ func cmdInspect(args []string) error {
 	if len(m.EnvVarNames) > 0 {
 		fmt.Printf("env var names (values not carried): %s\n", strings.Join(m.EnvVarNames, ", "))
 	}
-	report := func(title string, notes []mpack.LinkNote) {
+	report := func(title string, notes []ofpack.LinkNote) {
 		if len(notes) == 0 {
 			return
 		}
@@ -541,7 +541,7 @@ func cmdInspect(args []string) error {
 	report("relocated symlinks", m.RewrittenLinks)
 	report("dangling symlinks", m.DanglingLinks)
 	report("omitted symlinks", m.UnresolvedLinks)
-	if err := mpack.CheckPlatform(m); err != nil {
+	if err := ofpack.CheckPlatform(m); err != nil {
 		fmt.Printf("\nwarning: %v\n", err)
 	}
 	return nil
@@ -549,7 +549,7 @@ func cmdInspect(args []string) error {
 
 func cmdEnv(args []string) error {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	dest := fs.String("dest", "", "an unpacked mpack directory (required)")
+	dest := fs.String("dest", "", "an unpacked ofpack directory (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -560,27 +560,27 @@ func cmdEnv(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Print(mpack.ActivateScript(abs))
+	fmt.Print(ofpack.ActivateScript(abs))
 	return nil
 }
 
 func cmdDirenv(args []string) error {
 	if len(args) == 0 || args[0] != "init" {
-		return fmt.Errorf("usage: mpack direnv init [--dest DIR] [--project-root DIR]")
+		return fmt.Errorf("usage: ofpack direnv init [--dest DIR] [--project-root DIR]")
 	}
 	fs := flag.NewFlagSet("direnv init", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `Usage: mpack direnv init [--dest DIR] [--project-root DIR]
+		fmt.Fprint(fs.Output(), `Usage: ofpack direnv init [--dest DIR] [--project-root DIR]
 
 Hooks the project in the current directory up to direnv, so its toolchain is
 on PATH inside the directory and gone again when you leave. Run it from the
 project:
 
   cd ~/work/myapp
-  mpack direnv init
+  ofpack direnv init
   direnv allow
 
-direnv is an optional prerequisite; mpack does not bundle it. Without it,
+direnv is an optional prerequisite; ofpack does not bundle it. Without it,
 source the unpacked activate.sh by hand instead.
 
 An existing .envrc is never modified: the line to add is printed instead.
@@ -589,7 +589,7 @@ Flags:
 `)
 		fs.PrintDefaults()
 	}
-	dest := fs.String("dest", "", "the unpacked mpack directory (default: ./"+mpack.MpackSubdir+")")
+	dest := fs.String("dest", "", "the unpacked ofpack directory (default: ./"+ofpack.OfpackSubdir+")")
 	projectRoot := fs.String("project-root", "", "root directory originally packed, when a custom --dest is outside the project tree")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -598,7 +598,7 @@ Flags:
 	if err != nil {
 		return err
 	}
-	plan, check, wrote, err := mpack.InitDirenvWithRoot(cwd, *dest, *projectRoot)
+	plan, check, wrote, err := ofpack.InitDirenvWithRoot(cwd, *dest, *projectRoot)
 	if err != nil {
 		return err
 	}

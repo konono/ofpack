@@ -1,18 +1,47 @@
-# mpack
+# ofpack
 
 Carry a [mise](https://mise.jdx.dev/) toolchain to a disconnected machine.
 
-`mpack pack` collects active mise tools from your global configuration and
+`ofpack pack` collects active mise tools from your global configuration and
 the selected project directory **and its descendants**. It carries each
 directory's version selection, the installed binaries, and mise itself in one
-`.tar.gz`. `mpack unpack` restores them without network access.
+`.tar.gz`. `ofpack unpack` restores them without network access.
 
 Built with the Go standard library only.
+
+## Archives made by mpack
+
+ofpack was called mpack. The rename changed the archive layout — the bundled
+unpacker is `bin/ofpack` where mpack wrote `bin/mpack` — so **ofpack cannot
+unpack an mpack archive** and refuses one rather than installing a tree that
+is quietly not what the archive describes. Those archives declare schema 1 to
+3; everything ofpack writes is schema 4 or higher, so an mpack binary refuses
+an ofpack archive for the same reason.
+
+There are two ways across:
+
+```sh
+# unpack it with mpack, which the archive carries unless it was packed
+# with --no-unpacker
+mkdir -p /tmp/mpack-boot
+tar -xzf old.tar.gz -C /tmp/mpack-boot bin/mpack
+/tmp/mpack-boot/bin/mpack unpack -f old.tar.gz
+
+# or re-pack the source with ofpack
+cd ~/work/myapp && ofpack pack -o myapp.ofpack.tar.gz
+```
+
+An archive packed with `--no-unpacker` has no `bin/mpack` in it, so the first
+route needs an mpack binary from elsewhere; re-packing with ofpack avoids
+that.
+
+An unpacked mpack tree keeps working; it is `.mpack/` with its own
+`bin/mpack`, and ofpack does not touch it.
 
 ## Install
 
 ```sh
-go build -o mpack .
+go build -o ofpack .
 ```
 
 ## Use
@@ -23,7 +52,7 @@ toolchain you want.
 ```sh
 # on the connected machine
 cd ~/work/myapp
-mpack pack -o myapp.mpack.tar.gz
+ofpack pack -o myapp.ofpack.tar.gz
 ```
 
 ```
@@ -32,42 +61,42 @@ Packing the mise tools active in /Users/you/work/myapp
   jq                           1.8.1
   node                         22.20.0
   mise 2026.9.10 (darwin/arm64), 4821 files, 612 dirs, 143 symlinks, 284.1 MiB
-Wrote /Users/you/work/myapp/myapp.mpack.tar.gz (96.4 MiB)
+Wrote /Users/you/work/myapp/myapp.ofpack.tar.gz (96.4 MiB)
 ```
 
-Copy the archive across. That is the only file you need: an `mpack` for the
-target platform travels inside it as `bin/mpack`, so the receiving machine
+Copy the archive across. That is the only file you need: an `ofpack` for the
+target platform travels inside it as `bin/ofpack`, so the receiving machine
 needs nothing but `tar` to get started.
 
 ```sh
-scp myapp.mpack.tar.gz user@host:~/
+scp myapp.ofpack.tar.gz user@host:~/
 ```
 
 On the disconnected machine, from the home directory you copied it into:
 
 ```sh
-mkdir -p /tmp/mpack-boot
-tar -xzf myapp.mpack.tar.gz -C /tmp/mpack-boot bin/mpack   # just that one member
-/tmp/mpack-boot/bin/mpack unpack -f myapp.mpack.tar.gz     # lands in ~/work/myapp/.mpack
-source ~/work/myapp/.mpack/activate.sh
+mkdir -p /tmp/ofpack-boot
+tar -xzf myapp.ofpack.tar.gz -C /tmp/ofpack-boot bin/ofpack   # just that one member
+/tmp/ofpack-boot/bin/ofpack unpack -f myapp.ofpack.tar.gz     # lands in ~/work/myapp/.ofpack
+source ~/work/myapp/.ofpack/activate.sh
 mise ls --current        # the same tools, same versions
 ```
 
 Extracting into a temporary directory keeps the bootstrap from overwriting a
-`bin/mpack` of your own in the current directory. The same binary is installed
-at `~/work/myapp/.mpack/bin/mpack` for later use, so the temporary copy can be
+`bin/ofpack` of your own in the current directory. The same binary is installed
+at `~/work/myapp/.ofpack/bin/ofpack` for later use, so the temporary copy can be
 deleted. `--no-unpacker` leaves it out of the archive if you would rather
 supply your own.
 
 ### Where things land
 
-With no `--dest`, mpack reproduces the source project's path *relative to the
+With no `--dest`, ofpack reproduces the source project's path *relative to the
 home directory* under your home, and installs the toolchain in that project's
-`.mpack` subdirectory:
+`.ofpack` subdirectory:
 
 | packed on the source machine | unpacked on the target machine |
 | --- | --- |
-| `/Users/alice/work/myapp` | `/home/bob/work/myapp/.mpack` |
+| `/Users/alice/work/myapp` | `/home/bob/work/myapp/.ofpack` |
 
 That absorbs both a different user name and a different home prefix
 (`/Users` vs `/home`). Only the relative part (`work/myapp`) is stored in the
@@ -78,7 +107,7 @@ If the project was packed from a directory outside the home directory, such as
 required:
 
 ```sh
-./mpack unpack -f myapp.mpack.tar.gz --dest /work/myapp/.mpack
+./ofpack unpack -f myapp.ofpack.tar.gz --dest /work/myapp/.ofpack
 ```
 
 Pass `--dest DIR` whenever you want to choose the location yourself.
@@ -86,16 +115,16 @@ Pass `--dest DIR` whenever you want to choose the location yourself.
 The destination directory *is* `MISE_DATA_DIR`:
 
 ```
-~/work/myapp/.mpack/
+~/work/myapp/.ofpack/
 ├── activate.sh            sourceable shell setup (manual use)
 ├── direnv.envrc           sourced from a project .envrc (direnv use)
 ├── bin/mise               the mise executable
 ├── config/config.toml     generated global config, exact versions
 ├── installs/...           the tool trees
-└── mpack-manifest.json    what this tree came from
+└── ofpack-manifest.json    what this tree came from
 ```
 
-`activate.sh` and `mpack-manifest.json` are generated by unpack, but they are
+`activate.sh` and `ofpack-manifest.json` are generated by unpack, but they are
 installed through the same conflict check and transaction as everything else,
 so they never overwrite an existing file or follow a symlink out of the tree.
 
@@ -107,8 +136,8 @@ files — and unpack writes nothing outside the destination directory.
 `activate.sh` is meant to be sourced, not executed:
 
 ```sh
-source ~/work/myapp/.mpack/activate.sh   # bash, zsh
-. ~/work/myapp/.mpack/activate.sh        # sh, dash
+source ~/work/myapp/.ofpack/activate.sh   # bash, zsh
+. ~/work/myapp/.ofpack/activate.sh        # sh, dash
 ```
 
 It exports `MISE_DATA_DIR` and `MISE_CONFIG_DIR` (which must be set *before*
@@ -118,14 +147,14 @@ root selection on `PATH` immediately. It does not install a dynamic mise hook:
 that hook would read the current directory's original `mise.toml` and could
 replace the packed selection. For automatic directory switching, use direnv.
 
-`mpack env --dest DIR` prints the same snippet for an already unpacked tree.
+`ofpack env --dest DIR` prints the same snippet for an already unpacked tree.
 
 ### Automatic switching with direnv
 
 Sourcing by hand is fine for one project. With [direnv](https://direnv.net/)
 the toolchain can instead appear when you enter the directory and disappear
 when you leave, which is what makes several unpacked projects usable side by
-side. direnv is an **optional prerequisite** — mpack does not bundle it, and
+side. direnv is an **optional prerequisite** — ofpack does not bundle it, and
 everything above works without it.
 
 Set up direnv's hook once, in your shell's rc file:
@@ -145,7 +174,7 @@ Then, per project:
 
 ```sh
 cd ~/work/myapp
-mpack direnv init
+ofpack direnv init
 direnv allow
 ```
 
@@ -154,11 +183,11 @@ archive (see below); then it writes a one-line `.envrc` pointing at the
 unpacked tree:
 
 ```sh
-source_env '.mpack/direnv.envrc'
+source_env '.ofpack/direnv.envrc'
 ```
 
-For a child directory with its own mise configuration, run `mpack direnv init`
-there too. It finds the root project's `.mpack`, then points that child's
+For a child directory with its own mise configuration, run `ofpack direnv init`
+there too. It finds the root project's `.ofpack`, then points that child's
 `.envrc` at its own exact-version selection. A directory without a separate
 mise config inherits the nearest selected scope. For example, if the root has
 Go 1.25 and `app/mise.toml` selects Go 1.26, the archive contains both
@@ -166,10 +195,10 @@ versions; `cd root` selects 1.25 and `cd root/app` selects 1.26 after each
 directory has been initialized with direnv. The root `activate.sh` selects
 the root snapshot for manual use; it does not switch child scopes on `cd`.
 
-If the project **already has an `.envrc`, mpack does not touch it** — it
+If the project **already has an `.envrc`, ofpack does not touch it** — it
 prints the line for you to add where you want it. A destination outside the
 project is referenced by absolute path, quoted, so paths with spaces work;
-one inside the project is relative. The generated `.mpack/direnv.envrc`
+one inside the project is relative. The generated `.ofpack/direnv.envrc`
 derives its own location when direnv sources it rather than baking in the
 path it was written at, so moving or cloning the project keeps working.
 
@@ -190,7 +219,7 @@ directory restores exactly what you had before.
 **Do not also run `mise activate` in the same shell.** Its hook would read
 the original project configuration and can replace the packed versions.
 direnv manages entering and leaving a directory itself; its generated
-`.mpack/direnv.envrc` installs no mise hook. It uses its own script because
+`.ofpack/direnv.envrc` installs no mise hook. It uses its own script because
 `activate.sh` is for manual, persistent activation.
 
 #### What the direnv environment is, exactly
@@ -210,7 +239,7 @@ rather than what is unpacked here.
 **The limit:** config that mise reads regardless of those settings —
 `/etc/mise/config.toml` and a `/mise.toml` at the filesystem root — is not
 shut out. `MISE_CEILING_PATHS` did not prevent it in testing. Rather than
-claim an isolation that cannot be guaranteed, `mpack direnv init` *measures*
+claim an isolation that cannot be guaranteed, `ofpack direnv init` *measures*
 it: it runs the bundled mise exactly as the generated file does and compares
 the result against the manifest, reporting anything extra or missing, and
 naming those system config files when they exist.
@@ -225,7 +254,7 @@ approval to the wrong toolchain. A tool that mise lists but has not installed
 counts as missing, since it is not usable. A clean check is silent.
 
 The generated files refuse in the same way at load time: if mise cannot
-produce an environment, `.mpack/direnv.envrc` ends the evaluation so direnv
+produce an environment, `.ofpack/direnv.envrc` ends the evaluation so direnv
 applies nothing at all (rather than exporting what it had set so far and
 reporting success), and `activate.sh` returns non-zero without touching your
 shell further.
@@ -238,13 +267,13 @@ the archive. To go back to a live mise setup, remove the `.envrc` line and use
 ### Other commands
 
 ```sh
-mpack direnv init                     # hook this project up to direnv
-mpack inspect -f myapp.mpack.tar.gz   # tools, platform, symlink notes
-mpack pack --target linux/amd64       # pack for another OS (see below)
-mpack pack --no-unpacker              # leave bin/mpack out of the archive
-mpack pack --dry-run                  # what would be packed
-mpack unpack -f a.tar.gz --dry-run    # what would be installed, and where
-mpack pack -C ~/work/myapp            # pack another directory without cd
+ofpack direnv init                     # hook this project up to direnv
+ofpack inspect -f myapp.ofpack.tar.gz   # tools, platform, symlink notes
+ofpack pack --target linux/amd64       # pack for another OS (see below)
+ofpack pack --no-unpacker              # leave bin/ofpack out of the archive
+ofpack pack --dry-run                  # what would be packed
+ofpack unpack -f a.tar.gz --dry-run    # what would be installed, and where
+ofpack pack -C ~/work/myapp            # pack another directory without cd
 ```
 
 ## What is in an archive
@@ -254,7 +283,7 @@ mpack pack -C ~/work/myapp            # pack another directory without cd
 | the install directory of every tool active in the selected root or a descendant scope | tools installed but inactive in every selected scope |
 | `installs/.mise` (mise's install catalog, not a cache) | `downloads/`, `http-tarballs/`, `cache/`, `shims/` |
 | the mise binary, with symlinks resolved to the real file | anything outside the mise installs root |
-| an mpack for the target, as `bin/mpack` | — |
+| an ofpack for the target, as `bin/ofpack` | — |
 | a generated `config.toml` pinning exact versions | your project's source files |
 | the names of env vars your mise config sets | **their values** — see below |
 
@@ -271,7 +300,7 @@ different versions of one tool are both stored under
 the root and each child scope. `pyproject.toml` has no effect unless
 `--uv-project` is specified.
 
-For `mpack pack -C P`, a global mise config (G) and `P/mise.toml` apply at
+For `ofpack pack -C P`, a global mise config (G) and `P/mise.toml` apply at
 `P`. `P/app/mise.toml` adds or overrides selections for `P/app` and below.
 A `mise.toml` in the directory above `P` is ignored. If both scopes select
 different Go versions, both are packed; the root and child configs select
@@ -282,12 +311,12 @@ into the Cellar, and archiving the link would produce a dangling file.
 
 ### Secrets
 
-mise config `[env]` entries can hold secrets, so **mpack never records their
+mise config `[env]` entries can hold secrets, so **ofpack never records their
 values**. Only the variable names go into the manifest, and unpack reminds you
 which ones the source configuration set so you can provide them yourself:
 
 ```
-The source configuration also set these env vars, which mpack does not carry
+The source configuration also set these env vars, which ofpack does not carry
 (their values may be secrets) - set them yourself if the tools need them:
   DATABASE_URL, GITHUB_TOKEN
 ```
@@ -300,13 +329,13 @@ Tool installs are native binaries. An archive records the OS and architecture
 it was built on, and unpack refuses to run on anything else:
 
 ```
-mpack: archive was packed on darwin/arm64 but this machine is linux/amd64;
+ofpack: archive was packed on darwin/arm64 but this machine is linux/amd64;
 mise tools are native binaries and will not run (use --no-arch-check to override)
 ```
 
 **A macOS pack cannot be unpacked on Linux**, and the override does not change
 that — it exists for inspection, not to make foreign binaries run. Copying
-macOS tool installs to a Linux machine is not something mpack will do.
+macOS tool installs to a Linux machine is not something ofpack will do.
 
 ## Packing for another platform
 
@@ -315,7 +344,7 @@ that OS in the first place. One command does it:
 
 ```sh
 cd ~/work/myapp
-mpack pack --target linux/amd64 -o myapp.linux-amd64.mpack.tar.gz
+ofpack pack --target linux/amd64 -o myapp.linux-amd64.ofpack.tar.gz
 ```
 
 mise runs inside a [Podman](https://podman.io/) container of the target
@@ -333,9 +362,9 @@ mise ✓ jq@1.8.1  1.1s  jq-linux-amd64
 building the linux/amd64 unpacker with the local Go toolchain
   jq                           1.8.1
   mise 2026.10.17 (linux/amd64), 1 files, 1 dirs, 0 symlinks, 2.2 MiB
-  includes bin/mpack so the target needs only tar to bootstrap
+  includes bin/ofpack so the target needs only tar to bootstrap
 
-Wrote /Users/you/work/myapp/myapp.linux-amd64.mpack.tar.gz (58.9 MiB)
+Wrote /Users/you/work/myapp/myapp.linux-amd64.ofpack.tar.gz (58.9 MiB)
 ```
 
 Supported targets are `linux/amd64` and `linux/arm64`.
@@ -346,30 +375,30 @@ bind mounted into the container and the pack fails; share that path with the
 Podman machine first if you need it.
 
 Transfer and unpack are the same as for a native archive — one file, and the
-Linux `mpack` is inside it:
+Linux `ofpack` is inside it:
 
 ```sh
-scp myapp.linux-amd64.mpack.tar.gz user@host:~/
+scp myapp.linux-amd64.ofpack.tar.gz user@host:~/
 ```
 
 ```sh
-mkdir -p /tmp/mpack-boot
-tar -xzf myapp.linux-amd64.mpack.tar.gz -C /tmp/mpack-boot bin/mpack
-/tmp/mpack-boot/bin/mpack unpack -f myapp.linux-amd64.mpack.tar.gz
-source ~/work/myapp/.mpack/activate.sh
+mkdir -p /tmp/ofpack-boot
+tar -xzf myapp.linux-amd64.ofpack.tar.gz -C /tmp/ofpack-boot bin/ofpack
+/tmp/ofpack-boot/bin/ofpack unpack -f myapp.linux-amd64.ofpack.tar.gz
+source ~/work/myapp/.ofpack/activate.sh
 ```
 
 ### How it works, and what it needs
 
-Two containers are involved, and mpack itself runs in neither:
+Two containers are involved, and ofpack itself runs in neither:
 
 1. **The tools**, in an image of the *target* platform. mise installs them,
    then a small script hands back one gzipped tar: the install trees, the mise
    binary, and metadata (`mise ls --current --json`, `mise bin-paths`, the
    mise version). The archive — symlink classification, the manifest, the
    generated config — is built from that stream on this machine, which is why
-   no target-platform mpack is needed to pack.
-2. **The bundled unpacker**, only when this machine has no Go. mpack carries
+   no target-platform ofpack is needed to pack.
+2. **The bundled unpacker**, only when this machine has no Go. ofpack carries
    its own source, embedded, and builds a static `linux/<arch>` binary from
    it. With a Go toolchain of **go1.25 or newer** on `PATH` that happens
    locally in a second and no image is pulled at all; otherwise
@@ -381,13 +410,13 @@ Two containers are involved, and mpack itself runs in neither:
    cross-built archive usually gets tried out first. go1.25 is the oldest
    version whose output was verified to unpack correctly there, so a go1.24
    toolchain on `PATH` is passed over in favour of the image rather than
-   trusted. Compiling mpack itself still only needs go1.24. That container runs on
+   trusted. Compiling ofpack itself still only needs go1.24. That container runs on
    *this machine's* architecture and cross compiles, because a Go toolchain
    emulating a foreign architecture crashes rather than building. The result
    is checked to be an ELF binary of the right machine type before it goes
    into the archive.
 
-`--mpack-bin` supplies a prebuilt unpacker and skips step 2 entirely — it is
+`--ofpack-bin` supplies a prebuilt unpacker and skips step 2 entirely — it is
 checked to be an executable of the right format and machine type first, since
 bundling the wrong one would break the single-file bootstrap.
 `--builder-image` changes the image step 2 uses. `--print-command` prints the
@@ -401,7 +430,7 @@ container and never reach this machine — not the manifest, not the temporary
 payload, not memory. Version precedence comes from `mise bin-paths`, which
 carries no values at all.
 
-Inside the container mpack copies *only* mise config files from the selected
+Inside the container ofpack copies *only* mise config files from the selected
 root and its descendants (`mise.toml`, `.tool-versions`, and friends), plus
 your global mise config. It installs and records the effective selection in
 each scope. Local config above the selected root is excluded. A root relying
@@ -417,8 +446,8 @@ machine is older — RHEL 8 and Ubuntu 20.04 both are — pack against a matchin
 image instead:
 
 ```sh
-mpack pack --target linux/amd64 --image docker.io/library/debian:bullseye-slim   # glibc 2.31
-mpack pack --target linux/amd64 --image registry.access.redhat.com/ubi8/ubi      # glibc 2.28
+ofpack pack --target linux/amd64 --image docker.io/library/debian:bullseye-slim   # glibc 2.31
+ofpack pack --target linux/amd64 --image registry.access.redhat.com/ubi8/ubi      # glibc 2.28
 ```
 
 Check the target machine with `ldd --version` first. The image also has to
@@ -428,7 +457,7 @@ fuller image.
 
 Emulating a foreign architecture (`linux/amd64` on an Apple Silicon Mac) works
 but is slow, and the occasional installer does not run under it. Always finish
-with `mpack inspect` to confirm the platform and the tool list.
+with `ofpack inspect` to confirm the platform and the tool list.
 
 ### External symlinks are more common under cross packing
 
@@ -441,7 +470,7 @@ on the target by other means, or pick an image that provides what it needs. See
 
 ### Nothing breaks silently
 
-mpack refuses to produce an archive that would be broken on arrival. Every
+ofpack refuses to produce an archive that would be broken on arrival. Every
 symlink in the packed trees is classified:
 
 | symlink | result |
@@ -457,7 +486,7 @@ Real mise installs do contain all of these. `oc` links into
 installs root and are reported rather than quietly packed:
 
 ```
-mpack: 2 symlink(s) cannot be relocated:
+ofpack: 2 symlink(s) cannot be relocated:
   oc/4.22.6 -> /Users/alice/.local/share/mise/http-tarballs/08c2eb... (points outside the mise installs root)
   rust/stable -> /Users/alice/.cargo/bin (points outside the mise installs root)
 re-run with --exclude <tool> to drop the affected tool, or --allow-unresolved to
@@ -467,11 +496,11 @@ pack anyway (the links will be missing on the target)
 Pick one:
 
 ```sh
-mpack pack --exclude oc --exclude rust      # drop the affected tools
-mpack pack --allow-unresolved               # pack without those links, recorded in the manifest
+ofpack pack --exclude oc --exclude rust      # drop the affected tools
+ofpack pack --allow-unresolved               # pack without those links, recorded in the manifest
 ```
 
-`mpack inspect` lists them again on the receiving side, and unpack warns about
+`ofpack inspect` lists them again on the receiving side, and unpack warns about
 them, so the gap is visible at every step.
 
 ### Nothing is overwritten by accident
@@ -480,9 +509,9 @@ By default unpack aborts before writing anything if any destination path
 already exists:
 
 ```
-mpack: 2 destination path(s) already exist:
-  /home/bob/work/myapp/.mpack/bin/mise
-  /home/bob/work/myapp/.mpack/installs/node/22.20.0
+ofpack: 2 destination path(s) already exist:
+  /home/bob/work/myapp/.ofpack/bin/mise
+  /home/bob/work/myapp/.ofpack/installs/node/22.20.0
 re-run with --force to replace them or --skip-existing to keep them
 ```
 
@@ -520,10 +549,10 @@ recorded at all.
 ## Carrying a uv Python project
 
 A `.venv` cannot be copied between machines: it holds host-native binaries
-and absolute paths, and a macOS one is of no use on Linux at all. So mpack
+and absolute paths, and a macOS one is of no use on Linux at all. So ofpack
 does not copy it. With `--uv-project` it packs what is needed to *build* one
 on the other side — the target's Python, the target's uv, and every wheel the
-project's dependencies need — and `mpack uv restore` assembles the
+project's dependencies need — and `ofpack uv restore` assembles the
 environment there, offline.
 
 ### Which Python is packed
@@ -538,10 +567,10 @@ In `--uv-project` mode, the Python selector comes from, in order:
    `.config/mise.toml` and `.tool-versions` — in the order mise itself
    resolves them, and a quoted `"python"` key is read like a bare one.
    Files above the selected root and in unrelated siblings are ignored. If
-   it says `latest` and `requires-python` has a lower bound, mpack chooses
+   it says `latest` and `requires-python` has a lower bound, ofpack chooses
    that lowest allowed minor.
 
-   A configuration that names a Python mpack cannot interpret — several
+   A configuration that names a Python ofpack cannot interpret — several
    versions at once, the table form, or an empty value — stops the pack
    rather than falling through to the next source. Choosing a different
    interpreter than the directory asks for would only become apparent on the
@@ -555,19 +584,19 @@ Python actually installed for the target is checked against it. The package
 resolver then checks the dependencies. A broad lower bound like `>=3.8`
 selects Python 3.8 when no scoped selector overrides it; if dependencies
 require a newer interpreter, pack stops and asks you to choose one. If no
-selector or lower bound exists, mpack uses global Python if available, or
+selector or lower bound exists, ofpack uses global Python if available, or
 asks for `--python`. If `requires-python` is absent, a scoped or global mise
 selector or `--python` still works.
 
 For example, `mise.toml` can request `python = "latest"` while pyproject
-declares `requires-python = ">=3.11"`. mpack selects Python 3.11, then
+declares `requires-python = ">=3.11"`. ofpack selects Python 3.11, then
 checks whether the project dependencies can be downloaded and installed for
 that Python. If they cannot, pack fails before writing an archive. A conflicting
 range such as `>=3.12,<3.12` also fails before downloading. To choose a newer
 minor explicitly, use:
 
 ```sh
-mpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
+ofpack pack --uv-project --python 3.12 --target linux/amd64 -o myapp.tar.gz
 ```
 
 If `requires-python` has no lower bound, `latest` retains its normal mise
@@ -576,18 +605,18 @@ version against `requires-python` and verifies the wheel closure offline.
 
 The container has an isolated mise configuration containing only Python and
 uv. Scoped or global mise files only help **select Python**; their other
-tools and settings are not installed. mpack verifies the resulting wheels
+tools and settings are not installed. ofpack verifies the resulting wheels
 in a container without network access before writing the archive.
 
-`-C` (or cwd) sets a search root. mpack looks below it for exactly one
-`pyproject.toml`, skipping generated directories such as `.venv`, `.mpack`
+`-C` (or cwd) sets a search root. ofpack looks below it for exactly one
+`pyproject.toml`, skipping generated directories such as `.venv`, `.ofpack`
 and `node_modules`. Zero or multiple matches stop with an error; use `-C`
 to select the intended Python project. The archive's default destination
 follows the directory containing that `pyproject.toml`.
 
 ```sh
 cd ~/work/myapp
-mpack pack --uv-project --target linux/amd64 -o myapp.tar.gz
+ofpack pack --uv-project --target linux/amd64 -o myapp.tar.gz
 ```
 
 ```
@@ -621,11 +650,11 @@ packed, since it checks both against what it recorded.
 On the disconnected machine, one command builds the environment:
 
 ```sh
-mkdir -p /tmp/mpack-boot
-tar -xzf myapp.tar.gz -C /tmp/mpack-boot bin/mpack
-/tmp/mpack-boot/bin/mpack unpack -f myapp.tar.gz
+mkdir -p /tmp/ofpack-boot
+tar -xzf myapp.tar.gz -C /tmp/ofpack-boot bin/ofpack
+/tmp/ofpack-boot/bin/ofpack unpack -f myapp.tar.gz
 cd ~/work/myapp
-~/work/myapp/.mpack/bin/mpack uv restore
+~/work/myapp/.ofpack/bin/ofpack uv restore
 .venv/bin/ansible --version
 ```
 
@@ -646,11 +675,11 @@ it is.
 `[project].dependencies` in `pyproject.toml` is what gets installed.
 `requirements.txt` is read only to report a difference: in the project this
 was built for it lists two of the four dependencies, so installing from it
-would have left Ansible out entirely. When the two disagree, mpack says so
+would have left Ansible out entirely. When the two disagree, ofpack says so
 and packs what `pyproject.toml` declares.
 
 A uv archive declares a newer manifest schema than a plain one, so an older
-mpack refuses it outright instead of unpacking it without the wheels and
+ofpack refuses it outright instead of unpacking it without the wheels and
 reporting success.
 
 `uv.lock` is used when present, as **constraints** rather than requirements:
@@ -665,13 +694,13 @@ The container writes its own mise configuration listing only Python and uv.
 Your global configuration may supply a Python selector as a final fallback;
 its other tools are not installed, so a machine with twenty other tools and
 unrelocatable symlinks in them packs a clean two-tool environment.
-The ordinary `mpack pack` is unaffected; `--uv-project` is a separate, opt-in
+The ordinary `ofpack pack` is unaffected; `--uv-project` is a separate, opt-in
 path.
 
 ### The closure is proven before the archive is written
 
 A missing wheel discovered on a disconnected machine cannot be fixed there.
-So after downloading, mpack installs the whole closure in a second container
+So after downloading, ofpack installs the whole closure in a second container
 with `--network none`, confirms the network really is absent rather than
 assuming it, and runs `pip check`. If that fails the pack fails and no
 archive is written. Nothing in the build is allowed to fail quietly — a wheel
@@ -685,7 +714,7 @@ needed, so the environment would not be the one you asked for.
 
 `uv restore` also checks that the Python and uv it is about to use really
 come from the archive, under `installs/<tool>/<version>`. mise reads
-configuration mpack cannot shut out, so it can otherwise answer with the
+configuration ofpack cannot shut out, so it can otherwise answer with the
 machine's own interpreter and build an environment nobody packed.
 
 An existing `.venv` is never replaced silently. `--skip-existing` leaves it
@@ -704,7 +733,7 @@ checked.
 
 ## Known limits
 
-* **Absolute paths baked into file contents are not rewritten.** mpack fixes
+* **Absolute paths baked into file contents are not rewritten.** ofpack fixes
   symlinks; it cannot fix a path compiled into a binary or written into a
   script's shebang. Tools installed through language package managers
   (`npm:`, `pipx:`, `cargo:`) are the usual suspects. Unpacking under the
@@ -712,7 +741,7 @@ checked.
   hardcoded the *source* home directory will still need reinstalling.
 * **Only the installs root is carried.** A tool that depends on something
   elsewhere on the source machine (`~/.cargo`, a system library) is not made
-  self-contained by mpack. Where this is detectable through a symlink, pack
+  self-contained by ofpack. Where this is detectable through a symlink, pack
   fails rather than pretending otherwise.
 * **Env var values are not carried**, by design — see Secrets above.
 * Hard links inside an install tree are extracted as separate files, so an
@@ -734,7 +763,7 @@ go test ./...
 
 The cross-platform path was verified on macOS/arm64 with Podman: packing
 `--target linux/amd64`, then bootstrapping the result in a fresh linux/amd64
-container with nothing but `tar` and the bundled `bin/mpack`, and running the
+container with nothing but `tar` and the bundled `bin/ofpack`, and running the
 packed tool from it.
 
 The end-to-end tests pack a real tool, unpack it into an isolated `HOME`, and
@@ -742,5 +771,5 @@ check that the bundled mise finds and resolves it offline. They need mise and
 an already installed tool, so they are opt in:
 
 ```sh
-MPACK_E2E_TOOL='jq@1.8.1' go test ./... -run EndToEnd
+OFPACK_E2E_TOOL='jq@1.8.1' go test ./... -run EndToEnd
 ```

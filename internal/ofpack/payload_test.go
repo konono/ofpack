@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"archive/tar"
@@ -417,8 +417,8 @@ func TestPayloadScriptDetectsTarFailure(t *testing.T) {
 	}
 }
 
-// A binary supplied with --mpack-bin has to be checked as closely as one
-// mpack builds: bundling the wrong one breaks the single-file bootstrap.
+// A binary supplied with --ofpack-bin has to be checked as closely as one
+// ofpack builds: bundling the wrong one breaks the single-file bootstrap.
 func TestVerifyUnpackerRejectsWrongPlatformBinaries(t *testing.T) {
 	elf := func(machine uint16) []byte {
 		b := make([]byte, 64)

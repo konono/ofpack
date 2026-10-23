@@ -1,4 +1,4 @@
-package mpack
+package ofpack
 
 import (
 	"bytes"
@@ -15,22 +15,22 @@ import (
 // EnvrcName is the file direnv looks for in a project directory.
 const EnvrcName = ".envrc"
 
-// DirenvPlan is what `mpack direnv init` worked out: which unpacked tree to
+// DirenvPlan is what `ofpack direnv init` worked out: which unpacked tree to
 // use, and the one line a project's .envrc needs.
 type DirenvPlan struct {
 	// Project is the directory the .envrc belongs to.
 	Project string
-	// Dest is the unpacked mpack tree.
+	// Dest is the unpacked ofpack tree.
 	Dest string
 	// Line is the direnv directive to put in .envrc.
 	Line string
 	// EnvrcPath is where the .envrc is, or would be.
 	EnvrcPath string
-	// EnvrcExists reports whether the project already has one. mpack never
+	// EnvrcExists reports whether the project already has one. ofpack never
 	// edits an existing .envrc; the caller is shown Line to add by hand.
 	EnvrcExists bool
 	// DirenvInstalled reports whether direnv is on PATH. It is an optional
-	// prerequisite, not something mpack ships.
+	// prerequisite, not something ofpack ships.
 	DirenvInstalled bool
 	// ScopePath is the selected project-relative mise scope ("." for root).
 	ScopePath string
@@ -44,7 +44,7 @@ func PlanDirenv(project, dest string) (*DirenvPlan, error) {
 }
 
 // PlanDirenvWithRoot permits an explicit project root when the toolchain was
-// unpacked to a custom location rather than the project's .mpack directory.
+// unpacked to a custom location rather than the project's .ofpack directory.
 func PlanDirenvWithRoot(project, dest, explicitRoot string) (*DirenvPlan, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
@@ -57,13 +57,13 @@ func PlanDirenvWithRoot(project, dest, explicitRoot string) (*DirenvPlan, error)
 	if dest == "" {
 		// Child projects share the archive unpacked at the selected root.
 		for dir := project; ; dir = filepath.Dir(dir) {
-			candidate := filepath.Join(dir, MpackSubdir)
+			candidate := filepath.Join(dir, OfpackSubdir)
 			if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
 				dest = candidate
 				break
 			}
 			if filepath.Dir(dir) == dir {
-				return nil, fmt.Errorf("no unpacked toolchain at %s or its project ancestors: unpack an archive first, or point at one with --dest DIR", filepath.Join(project, MpackSubdir))
+				return nil, fmt.Errorf("no unpacked toolchain at %s or its project ancestors: unpack an archive first, or point at one with --dest DIR", filepath.Join(project, OfpackSubdir))
 			}
 		}
 	}
@@ -86,7 +86,7 @@ func PlanDirenvWithRoot(project, dest, explicitRoot string) (*DirenvPlan, error)
 			if err != nil {
 				return nil, err
 			}
-		} else if filepath.Base(dest) == MpackSubdir {
+		} else if filepath.Base(dest) == OfpackSubdir {
 			projectRoot = filepath.Dir(dest)
 		} else if m.HomeRelativeProjectPath != "" {
 			if home, err := os.UserHomeDir(); err == nil {
@@ -115,7 +115,7 @@ func PlanDirenvWithRoot(project, dest, explicitRoot string) (*DirenvPlan, error)
 		ref = filepath.ToSlash(filepath.Join(rel, filepath.FromSlash(sourceName)))
 	} else if rel, ok := RelUnder(project, target); ok {
 		ref = filepath.ToSlash(rel)
-	} else if m.Schema == SchemaVersionScoped && filepath.Base(dest) == MpackSubdir && projectRoot == filepath.Dir(dest) {
+	} else if m.Schema == SchemaVersionScoped && filepath.Base(dest) == OfpackSubdir && projectRoot == filepath.Dir(dest) {
 		if rel, err := filepath.Rel(project, target); err == nil {
 			ref = filepath.ToSlash(rel)
 		}
@@ -173,20 +173,20 @@ func checkUnpackedTree(dest string) error {
 	}
 	for _, rel := range []string{DirenvName, InstalledManifestName, MiseBinName} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel))); err != nil {
-			return fmt.Errorf("%s does not look like an unpacked mpack directory: %s is missing", dest, rel)
+			return fmt.Errorf("%s does not look like an unpacked ofpack directory: %s is missing", dest, rel)
 		}
 	}
 	return nil
 }
 
-// WriteEnvrc creates the project's .envrc with just the mpack line. It
+// WriteEnvrc creates the project's .envrc with just the ofpack line. It
 // refuses to touch an existing file: a project's .envrc is the user's, and
-// appending to it silently is not mpack's call.
+// appending to it silently is not ofpack's call.
 func (p *DirenvPlan) WriteEnvrc() error {
 	if p.EnvrcExists {
 		return fmt.Errorf("%s already exists", p.EnvrcPath)
 	}
-	body := fmt.Sprintf("# Added by mpack: load the toolchain unpacked in %s.\n%s\n",
+	body := fmt.Sprintf("# Added by ofpack: load the toolchain unpacked in %s.\n%s\n",
 		shellQuote(p.Dest), p.Line)
 	f, err := os.OpenFile(p.EnvrcPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -216,7 +216,7 @@ would both be managing the same variables.
 `)
 		return b.String()
 	}
-	b.WriteString(`direnv is not installed. It is an optional prerequisite - mpack does not
+	b.WriteString(`direnv is not installed. It is an optional prerequisite - ofpack does not
 bundle it - and the archive works without it:
 
     source ` + shellQuote(filepath.Join(p.Dest, ActivateName)) + `
@@ -229,7 +229,7 @@ shell (for example: eval "$(direnv hook zsh)" in ~/.zshrc), then run:
 	return b.String()
 }
 
-// InitDirenv is the whole of `mpack direnv init`: work out the destination,
+// InitDirenv is the whole of `ofpack direnv init`: work out the destination,
 // make sure the environment it produces really is the archive's, and only
 // then write the project's .envrc.
 //
@@ -275,7 +275,7 @@ type SnapshotCheck struct {
 	// Missing are tools in the manifest that the environment does not
 	// resolve.
 	Missing []string
-	// SystemConfigs are config files mpack cannot shut out, listed when they
+	// SystemConfigs are config files ofpack cannot shut out, listed when they
 	// exist so a mismatch has somewhere obvious to start.
 	SystemConfigs []string
 }
@@ -398,7 +398,7 @@ func (c SnapshotCheck) Report() string {
 		if len(c.SystemConfigs) == 0 {
 			return ""
 		}
-		return fmt.Sprintf("note: %s exist(s) and mise reads them whatever mpack sets; the environment still matches the archive\n",
+		return fmt.Sprintf("note: %s exist(s) and mise reads them whatever ofpack sets; the environment still matches the archive\n",
 			strings.Join(c.SystemConfigs, ", "))
 	}
 	var b strings.Builder
@@ -410,7 +410,7 @@ func (c SnapshotCheck) Report() string {
 		fmt.Fprintf(&b, "  missing:    %s\n", strings.Join(c.Missing, ", "))
 	}
 	if len(c.SystemConfigs) > 0 {
-		fmt.Fprintf(&b, "  likely cause: %s, which mise reads whatever mpack sets\n", strings.Join(c.SystemConfigs, ", "))
+		fmt.Fprintf(&b, "  likely cause: %s, which mise reads whatever ofpack sets\n", strings.Join(c.SystemConfigs, ", "))
 	}
 	return b.String()
 }
