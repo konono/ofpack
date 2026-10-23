@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -241,7 +242,15 @@ func copyPayloadBodies(payloadPath string, byName map[string]entry, tw *tar.Writ
 // Only environment variable *names* are emitted. mise config env entries can
 // hold secrets, so the values never leave the container - not even into this
 // machine's memory or a temporary file.
-func PayloadScript() string {
+func PayloadScript() string { return PayloadScriptWith("") }
+
+// PayloadScriptWith is PayloadScript plus one more directory to carry, used
+// by the uv mode to add the wheel closure to the same stream.
+func PayloadScriptWith(extraDir string) string {
+	extra := ""
+	if extraDir != "" {
+		extra = " -C " + shellQuoteIfNeeded(filepath.Dir(extraDir)) + " " + shellQuoteIfNeeded(filepath.Base(extraDir))
+	}
 	return `
 root="$MISE_DATA_DIR/installs"
 meta="$(mktemp -d)"
@@ -269,7 +278,7 @@ chmod 0755 "$meta/bin/mise"
 # with metadata but no install trees. Its status is stashed and checked.
 status_file="$meta/.tar-status"
 {
-  tar -cf - -C "$meta" ` + payloadMetaDir + ` bin -C "$(dirname "$root")" installs
+  tar -cf - -C "$meta" ` + payloadMetaDir + ` bin -C "$(dirname "$root")" installs` + extra + `
   echo $? > "$status_file"
 } | gzip -1
 tar_status="$(cat "$status_file" 2>/dev/null || echo 1)"

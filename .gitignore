@@ -3,3 +3,6 @@
 /mpack-linux-arm64
 *.tar.gz
 /.panecom/
+
+# Local verification input only: contains secrets, never commit.
+/rhoai-ansible/

@@ -389,3 +389,17 @@ func HostTarget() string { return runtime.GOOS + "/" + runtime.GOARCH }
 // architecture carries over - and it must, because a Go toolchain emulating a
 // foreign architecture crashes rather than building.
 func hostContainerPlatform() string { return "linux/" + runtime.GOARCH }
+
+// SourceComplete checks that an embedded source tree holds every Go file of
+// the package it was taken from. Embedding a list of names meant a new file
+// could be left out, and the omission only surfaced when the unpacker build
+// failed; this makes it a test failure instead.
+func SourceComplete(src fs.FS, want []string) []string {
+	var missing []string
+	for _, name := range want {
+		if _, err := fs.Stat(src, name); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}

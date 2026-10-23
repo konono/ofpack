@@ -510,6 +510,128 @@ Permissions are carried across masked to the standard bits, so the executable
 bit survives while setuid, setgid and sticky are dropped. Ownership is not
 recorded at all.
 
+## Carrying a uv Python project
+
+A `.venv` cannot be copied between machines: it holds host-native binaries
+and absolute paths, and a macOS one is of no use on Linux at all. So mpack
+does not copy it. With `--uv-project` it packs what is needed to *build* one
+on the other side — the target's Python, the target's uv, and every wheel the
+project's dependencies need — and `mpack uv restore` assembles the
+environment there, offline.
+
+```sh
+cd ~/work/myapp
+mpack pack --uv-project --target linux/amd64 -o myapp.tar.gz
+```
+
+```
+Packing the Python environment for /Users/you/work/myapp, built for linux/amd64.
+  python 3.12, dependencies from pyproject.toml:
+    ansible-core>=2.17,<3.0
+    ansible>=10.0
+    kubernetes>=29.0
+    jmespath>=1.0
+  uv.lock pins 32 package(s) exactly
+  the project's own files are not packed, and only pyproject.toml, uv.lock and
+  requirements.txt were read
+
+--- downloading wheels ---
+--- 32 wheels ---
+
+--- checking the closure installs with no network ---
+33 distributions installed with no network
+
+  python 3.12.15 / uv 0.13.5
+  32 wheels for python 3.12.15, verified offline
+Wrote myapp.tar.gz (170.7 MiB)
+```
+
+The project checkout has to be on the disconnected machine already — the
+archive carries the toolchain, not your source. `uv restore` needs at least
+the `pyproject.toml`, and the `uv.lock` too if there was one when it was
+packed, since it checks both against what it recorded.
+
+On the disconnected machine, one command builds the environment:
+
+```sh
+mkdir -p /tmp/mpack-boot
+tar -xzf myapp.tar.gz -C /tmp/mpack-boot bin/mpack
+/tmp/mpack-boot/bin/mpack unpack -f myapp.tar.gz
+cd ~/work/myapp
+~/work/myapp/.mpack/bin/mpack uv restore
+.venv/bin/ansible --version
+```
+
+There is no choosing between fallbacks and no copying files by hand: the
+Python, uv, and wheels all come out of the archive, and `uv restore` creates
+`.venv` and nothing else.
+
+### What is read, and what is not
+
+Only three files in the project are opened: `pyproject.toml`, and `uv.lock`
+and `requirements.txt` if they exist. Nothing else — not `.credentials`, not
+`.generated-passwords.yml`, not `.envrc`, not inventories or roles — is read,
+and none of the project's own files are packed. `.envrc` is left exactly as
+it is.
+
+`[project].dependencies` in `pyproject.toml` is what gets installed.
+`requirements.txt` is read only to report a difference: in the project this
+was built for it lists two of the four dependencies, so installing from it
+would have left Ansible out entirely. When the two disagree, mpack says so
+and packs what `pyproject.toml` declares.
+
+A uv archive declares a newer manifest schema than a plain one, so an older
+mpack refuses it outright instead of unpacking it without the wheels and
+reporting success.
+
+`uv.lock` is used when present, as **constraints** rather than requirements:
+it pins exact versions without dragging in entries for other platforms, and
+the project's own entry is excluded since it is not a wheel. A project
+without a lock packs fine; versions are then resolved at pack time and frozen
+into the wheels that end up in the archive.
+
+### Isolation from your own mise setup
+
+The container writes its own mise configuration listing only Python and uv.
+Your global configuration is not consulted, so a machine with twenty other
+tools and unrelocatable symlinks in them packs a clean two-tool environment.
+The ordinary `mpack pack` is unaffected; `--uv-project` is a separate, opt-in
+path.
+
+### The closure is proven before the archive is written
+
+A missing wheel discovered on a disconnected machine cannot be fixed there.
+So after downloading, mpack installs the whole closure in a second container
+with `--network none`, confirms the network really is absent rather than
+assuming it, and runs `pip check`. If that fails the pack fails and no
+archive is written. Nothing in the build is allowed to fail quietly — a wheel
+that cannot be fetched stops the pack rather than leaving a hole.
+
+### Restoring safely
+
+`uv restore` refuses to build if `pyproject.toml` or `uv.lock` has changed
+since the archive was packed: the wheels are the ones the old declaration
+needed, so the environment would not be the one you asked for.
+
+`uv restore` also checks that the Python and uv it is about to use really
+come from the archive, under `installs/<tool>/<version>`. mise reads
+configuration mpack cannot shut out, so it can otherwise answer with the
+machine's own interpreter and build an environment nobody packed.
+
+An existing `.venv` is never replaced silently. `--skip-existing` leaves it
+untouched; `--force` builds the new environment in a staging directory beside
+it, checks it, and only then swaps it in, putting the old one back if
+anything fails. The environment is created with `uv venv --relocatable`,
+without which uv writes the staging path into every console script and the
+result has a working `python` but a broken `ansible`.
+
+### Not included
+
+Ansible Galaxy collections and `requirements.yml` are **out of scope**. This
+carries the Python interpreter, uv, the wheel closure and the project's
+`.venv`; collections are a separate concern and are not packed, restored or
+checked.
+
 ## Known limits
 
 * **Absolute paths baked into file contents are not rewritten.** mpack fixes
@@ -525,6 +647,14 @@ recorded at all.
 * **Env var values are not carried**, by design — see Secrets above.
 * Hard links inside an install tree are extracted as separate files, so an
   archive can be larger on disk than the original.
+* **uv could not be run under qemu in testing.** On an Apple Silicon Mac,
+  `podman run --platform linux/amd64` with uv 0.13.5 segfaulted
+  (`qemu: uncaught target signal 11`) while the same binary ran natively on
+  linux/arm64 and on a real x86_64 host. Packing for linux/amd64 from macOS
+  is unaffected, because the wheels are downloaded with Python and the
+  offline check runs with pip; but the uv path itself is exercised on the
+  target rather than during a cross-platform pack. This is one host, one
+  emulator and one uv version, not a general statement about uv.
 
 ## Development
 

@@ -261,6 +261,20 @@ func (p *Plan) scanPayloadEntries(opts PackOptions) error {
 			hasMise = true
 			p.byName[pe.name] = entry{name: pe.name}
 			return nil
+		case pe.name == UVPrefix || strings.HasPrefix(pe.name, UVPrefix+"/"):
+			// The uv payload - wheels and the requirement files - is carried
+			// through as it is; it has no symlinks to relocate.
+			if pe.hdr.Typeflag == tar.TypeSymlink {
+				return fmt.Errorf("unexpected symlink in the uv payload: %s", pe.name)
+			}
+			if pe.hdr.Typeflag == tar.TypeReg {
+				p.Manifest.Stats.Files++
+				p.Manifest.Stats.Bytes += pe.hdr.Size
+			} else {
+				p.Manifest.Stats.Dirs++
+			}
+			p.byName[pe.name] = entry{name: pe.name}
+			return nil
 		case pe.name == InstallsPrefix || strings.HasPrefix(pe.name, InstallsPrefix+"/"):
 		default:
 			return nil // nothing else from the container is archived

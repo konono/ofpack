@@ -45,6 +45,12 @@ type CrossOptions struct {
 	Exclude []string
 	// AllowUnresolved is passed through to the in-container pack.
 	AllowUnresolved bool
+	// UV, when set, switches to packing a Python project: the container
+	// installs only a Python and a uv for the target and downloads the
+	// project's wheels, instead of mirroring this machine's mise setup.
+	UV *UVSource
+	// PythonSpec is the Python version for UV mode.
+	PythonSpec string
 }
 
 // CrossPlan is a fully resolved cross pack, ready to run or to print.
@@ -191,7 +197,10 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 		home = filepath.Clean(abs)
 	}
 	containerProject := containerPathFor(project, home, containerHome)
-	configs := collectProjectConfigs(project, home, containerHome)
+	var configs []configMount
+	if opts.UV == nil {
+		configs = collectProjectConfigs(project, home, containerHome)
+	}
 
 	// The payload is streamed out over stdout rather than written to a
 	// mounted directory: bind mounts are not reliably writable from the
@@ -203,7 +212,7 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 		"-e", "MPACK_CONTAINER_PROJECT=" + containerProject,
 	}
 	hasGlobal := false
-	if opts.GlobalConfigDir != "" {
+	if opts.UV == nil && opts.GlobalConfigDir != "" {
 		if fi, err := os.Stat(opts.GlobalConfigDir); err == nil && fi.IsDir() {
 			abs, err := filepath.Abs(opts.GlobalConfigDir)
 			if err != nil {
@@ -215,13 +224,19 @@ func BuildCrossPlan(opts CrossOptions) (*CrossPlan, error) {
 	}
 	// A project can rely entirely on the global config, so only a complete
 	// absence of configuration is an error.
-	if len(configs) == 0 && !hasGlobal {
+	if opts.UV == nil && len(configs) == 0 && !hasGlobal {
 		return nil, fmt.Errorf("no mise configuration found for %s: neither the directory and its parents nor a global config dir provide one, so there is nothing to install in the container", project)
 	}
 	for _, c := range configs {
 		args = append(args, "-v", c.Host+":"+c.MountPath+":ro")
 	}
+	// A uv pack writes its own mise configuration inside the container,
+	// listing only Python and uv, so nothing of this machine's setup - and
+	// none of the unrelocatable symlinks in it - comes along.
 	script := crossScript(opts, hasGlobal, configs)
+	if opts.UV != nil {
+		script = UVBuildScript(opts.UV, opts.PythonSpec)
+	}
 	args = append(args, image, "sh", "-euc", script)
 
 	return &CrossPlan{

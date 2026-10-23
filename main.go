@@ -24,6 +24,7 @@ Usage:
   mpack inspect -f ARCHIVE         Show what an archive contains
   mpack env     --dest DIR         Print the shell setup for an unpacked tree
   mpack direnv  init [--dest DIR]  Hook a project up to direnv for automatic switching
+  mpack uv      restore            Build a packed Python project's .venv, offline
   mpack version
 
 Typical flow:
@@ -81,6 +82,8 @@ func main() {
 		err = cmdEnv(os.Args[2:])
 	case "direnv":
 		err = cmdDirenv(os.Args[2:])
+	case "uv":
+		err = cmdUV(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("mpack", version)
 	case "help", "-h", "--help":
@@ -127,6 +130,8 @@ Flags:
 	engine := fs.String("engine", "podman", "container engine for --target")
 	mpackBin := fs.String("mpack-bin", "", "use this prebuilt mpack as the bundled unpacker instead of building one")
 	noUnpacker := fs.Bool("no-unpacker", false, "do not bundle "+mpack.UnpackerName+"; the target will need its own mpack")
+	uvProject := fs.Bool("uv-project", false, "pack a uv Python project: the target's Python, uv and a wheel closure, instead of this machine's mise tools")
+	pythonSpec := fs.String("python", "", "Python X.Y for --uv-project (default: derived from requires-python; required when that states no installable version). A version given here must satisfy requires-python")
 	printCommand := fs.Bool("print-command", false, "with --target, print the tool-installation container command (which streams a payload, not a finished archive) instead of running it")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -153,6 +158,12 @@ Flags:
 		outName = filepath.Base(workDir) + ".mpack.tar.gz"
 	}
 
+	if *uvProject {
+		if *target == "" {
+			return fmt.Errorf("--uv-project needs --target, for example --target linux/amd64:\nthe Python and the wheels have to be built for the machine that will use them")
+		}
+		return uvPack(*target, outName, workDir, *pythonSpec, *image, *builderImage, *engine, *mpackBin, *noUnpacker, *printCommand, *dryRun)
+	}
 	if *target != "" && *target != mpack.HostPlatform() {
 		return crossPack(*target, outName, workDir, *image, *builderImage, *engine, *mpackBin,
 			exclude, *allowUnresolved, *noUnpacker, *printCommand, *dryRun)

@@ -121,10 +121,23 @@ func ReadManifest(r io.Reader) (*Manifest, error) {
 	if err := json.NewDecoder(io.LimitReader(tr, 1<<22)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
-	if m.Schema != SchemaVersion {
-		return nil, fmt.Errorf("archive schema %d is not supported by this mpack (want %d)", m.Schema, SchemaVersion)
+	if err := checkSchema(m.Schema); err != nil {
+		return nil, err
 	}
 	return &m, nil
+}
+
+// supportedSchemas are the archive layouts this mpack can unpack in full.
+var supportedSchemas = []int{SchemaVersion, SchemaVersionUV}
+
+func checkSchema(schema int) error {
+	for _, s := range supportedSchemas {
+		if schema == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("archive schema %d is not supported by this mpack (it understands %v); a newer mpack can unpack it, and unpacking it with this one would silently leave parts out",
+		schema, supportedSchemas)
 }
 
 // CheckPlatform compares the archive's platform against the current one.
@@ -151,6 +164,11 @@ func unitsFor(m *Manifest) []unit {
 	if m.HasCatalog {
 		p := path.Join(InstallsPrefix, CatalogDir)
 		units = append(units, unit{archivePrefix: p, destRel: filepath.FromSlash(p)})
+	}
+	if m.UVProject != nil {
+		// The wheel closure and the requirement files the Python environment
+		// is rebuilt from.
+		units = append(units, unit{archivePrefix: UVPrefix, destRel: UVPrefix})
 	}
 	// The generated sidecars are units too: they must respect the overwrite
 	// policy and go through the same transaction, never a blind write.
@@ -248,8 +266,8 @@ func Unpack(archive io.Reader, opts UnpackOptions) (*Manifest, error) {
 	if err := json.NewDecoder(io.LimitReader(tr, 1<<22)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
-	if m.Schema != SchemaVersion {
-		return nil, fmt.Errorf("archive schema %d is not supported by this mpack (want %d)", m.Schema, SchemaVersion)
+	if err := checkSchema(m.Schema); err != nil {
+		return nil, err
 	}
 	if !opts.SkipArch {
 		if err := CheckPlatform(&m); err != nil {

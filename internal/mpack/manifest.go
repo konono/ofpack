@@ -29,7 +29,15 @@ const (
 	// preserved along with the install trees.
 	CatalogDir = ".mise"
 
+	// SchemaVersion is what a plain archive declares. An mpack that predates
+	// a layout change must refuse such an archive rather than unpack it
+	// partially, so anything that adds a new kind of content bumps this.
 	SchemaVersion = 1
+	// SchemaVersionUV is declared by archives that carry a Python
+	// environment. An older mpack knows nothing of the uv/ directory and
+	// would drop it while reporting success, leaving a tree that looks
+	// unpacked but cannot restore; the higher number makes it stop instead.
+	SchemaVersionUV = 2
 )
 
 // Manifest is the metadata stored at the head of every mpack archive.
@@ -74,6 +82,10 @@ type Manifest struct {
 	// unless --allow-unresolved was given, in which case they are recorded
 	// here so the breakage is never silent.
 	UnresolvedLinks []LinkNote `json:"unresolved_links,omitempty"`
+
+	// UVProject is present when the archive carries a Python environment to
+	// rebuild, rather than only mise tools.
+	UVProject *UVProject `json:"uv_project,omitempty"`
 
 	Stats Stats `json:"stats"`
 }
