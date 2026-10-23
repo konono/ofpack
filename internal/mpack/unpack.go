@@ -691,8 +691,9 @@ export MISE_OFFLINE=1
 }
 
 // ActivateScript renders the POSIX shell snippet that points mise at the
-// unpacked tree. It is meant to be sourced, not executed, and works in bash
-// and zsh alike.
+// unpacked root snapshot. It is meant to be sourced, not executed. A dynamic
+// mise activate hook must not be installed here: it would immediately read
+// the current project's mise.toml and replace the packed selection.
 func ActivateScript(dest string) string {
 	q := shellQuote(dest)
 	return fmt.Sprintf(`#!/bin/sh
@@ -723,15 +724,6 @@ if ! _mpack_env="$("$MPACK_ROOT/bin/mise" -C / env -s bash)"; then
 fi
 eval "$_mpack_env"
 unset _mpack_env
-
-# Then, for interactive shells, install the hook so the environment keeps up
-# with directory changes. Other shells are supported too, e.g.
-#   eval "$("$MPACK_ROOT/bin/mise" activate fish)"
-if [ -n "${ZSH_VERSION-}" ]; then
-  eval "$("$MPACK_ROOT/bin/mise" activate zsh)"
-elif [ -n "${BASH_VERSION-}" ]; then
-  eval "$("$MPACK_ROOT/bin/mise" activate bash)"
-fi
 `, time.Now().UTC().Format(time.RFC3339), q, q, miseEnvPreamble(q))
 }
 

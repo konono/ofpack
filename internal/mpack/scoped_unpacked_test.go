@@ -219,3 +219,45 @@ func TestScopedDirenvScriptFindsMovedTree(t *testing.T) {
 		}
 	}
 }
+
+// Manual activation is a fixed root snapshot even when sourced inside a child
+// whose live mise.toml asks for another version. A dynamic mise hook would
+// immediately replace the -C / environment and fail this production path.
+func TestActivateScriptKeepsRootSelectionInsideChild(t *testing.T) {
+	project := t.TempDir()
+	child := filepath.Join(project, "app")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "mise.toml"), []byte("[tools]\ngo = \"1.25.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(project, MpackSubdir)
+	if _, err := Unpack(bytes.NewReader(scopedFixture(t)), UnpackOptions{Dest: dest}); err != nil {
+		t.Fatal(err)
+	}
+	stub := `#!/bin/sh
+case "$*" in
+  "-C / env -s bash") printf 'export PATH="%s/installs/go/1.24.0/bin:$PATH"\n' "$MISE_DATA_DIR" ;;
+  "activate bash")
+    if [ -f ./mise.toml ]; then
+      printf 'export PATH="%s/installs/go/1.25.0/bin:$PATH"\n' "$MISE_DATA_DIR"
+    fi ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dest, MiseBinName), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `PROMPT_COMMAND=; . ../.mpack/activate.sh; command -v go; cd ..; command -v go; printf 'prompt=%s\n' "$PROMPT_COMMAND"`)
+	cmd.Dir = child
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("activate.sh failed: %v: %s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	want := filepath.Join(dest, "installs/go/1.24.0/bin/go")
+	if len(lines) != 3 || lines[0] != want || lines[1] != want || lines[2] != "prompt=" {
+		t.Fatalf("manual activation did not keep the root snapshot: %q, want %q twice and no hook", out, want)
+	}
+}

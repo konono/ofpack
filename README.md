@@ -113,13 +113,10 @@ source ~/work/myapp/.mpack/activate.sh   # bash, zsh
 
 It exports `MISE_DATA_DIR` and `MISE_CONFIG_DIR` (which must be set *before*
 mise starts, so they cannot be passed on the mise command line), sets
-`MISE_OFFLINE=1` so mise never reaches for the network, and evaluates the hook
-for your shell. In bash and zsh the hook is selected automatically; for another
-shell run the matching one yourself:
-
-```sh
-eval "$(~/work/myapp/.mpack/bin/mise activate fish)"
-```
+`MISE_OFFLINE=1` so mise never reaches for the network, and puts the packed
+root selection on `PATH` immediately. It does not install a dynamic mise hook:
+that hook would read the current directory's original `mise.toml` and could
+replace the packed selection. For automatic directory switching, use direnv.
 
 `mpack env --dest DIR` prints the same snippet for an already unpacked tree.
 
@@ -190,12 +187,11 @@ go version go1.26.4 darwin/arm64      # whatever your machine had
 `GOROOT` and the rest of the tool environment follow along, and leaving the
 directory restores exactly what you had before.
 
-**Do not also run `mise activate` in the same shell.** direnv and the mise
-hook would both be managing the same variables. The generated
-`.mpack/direnv.envrc` deliberately installs no mise hook of its own for the
-same reason: direnv evaluates it in a separate process and owns the enter and
-leave transitions. That is also why `activate.sh` is not what `.envrc`
-sources — it does install a hook, because it is the manual, no-direnv route.
+**Do not also run `mise activate` in the same shell.** Its hook would read
+the original project configuration and can replace the packed versions.
+direnv manages entering and leaving a directory itself; its generated
+`.mpack/direnv.envrc` installs no mise hook. It uses its own script because
+`activate.sh` is for manual, persistent activation.
 
 #### What the direnv environment is, exactly
 

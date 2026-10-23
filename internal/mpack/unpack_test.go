@@ -102,10 +102,13 @@ func TestRoundTripPreservesContentPermissionsAndLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"MISE_DATA_DIR", "MISE_CONFIG_DIR", "MISE_OFFLINE=1", "env -s bash", "activate zsh", "activate bash"} {
+	for _, want := range []string{"MISE_DATA_DIR", "MISE_CONFIG_DIR", "MISE_OFFLINE=1", "env -s bash"} {
 		if !strings.Contains(string(script), want) {
 			t.Errorf("activate.sh missing %q", want)
 		}
+	}
+	if strings.Contains(string(script), `"$MPACK_ROOT/bin/mise" activate `) {
+		t.Fatal("activate.sh must not install a dynamic mise hook")
 	}
 }
 
