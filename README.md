@@ -19,6 +19,50 @@ ofpack version
 Make sure the Go binary directory (`$(go env GOPATH)/bin`, or `GOBIN` if set)
 is on your `PATH`.
 
+### Use from an AI agent (MCP)
+
+`ofpack mcp serve` exposes the `pack`, `unpack`, and `inspect` tools over local
+MCP stdio. Install an ofpack build that has this command first. Until the next
+release, build the current checkout with `go install .`; after release, use the
+`go install github.com/konono/ofpack@latest` command above. Register the full
+binary path so the agent can find it even if its `PATH` differs from your shell:
+Check that `"$(command -v ofpack)" help` lists `ofpack mcp serve` first; an
+older binary earlier on `PATH` will not provide the server.
+
+```sh
+OFPACK_BIN="$(command -v ofpack)"
+
+# Claude Code (user-wide)
+claude mcp add --scope user ofpack -- "$OFPACK_BIN" mcp serve
+
+# Codex (user-wide)
+codex mcp add ofpack -- "$OFPACK_BIN" mcp serve
+
+# OpenCode v2 (global configuration)
+opencode mcp add ofpack --global -- "$OFPACK_BIN" mcp serve
+
+# Gemini CLI (user-wide)
+gemini mcp add --scope user ofpack "$OFPACK_BIN" mcp serve
+```
+
+OpenCode 1.x uses an interactive installer instead: run `opencode mcp add
+ofpack`, choose a local server, and enter the binary path followed by
+`mcp serve`. Verify with `claude mcp list`, `codex mcp list`,
+`opencode mcp list`, or `gemini mcp list`. See the
+[Claude Code](https://code.claude.com/docs/en/mcp),
+[Codex](https://developers.openai.com/resources/docs-mcp), and
+[OpenCode](https://dev.opencode.ai/v2/docs/cli/commands/) and
+[Gemini CLI](https://geminicli.com/docs/tools/mcp-server/) MCP guides for the
+client-specific options. Cross-platform `pack` may take much longer than
+OpenCode's default MCP timeout; set a longer `mcp.servers.ofpack.timeout` in
+OpenCode v2's configuration when using it.
+
+The MCP tools take absolute paths: `pack` needs `project_dir` (and optionally
+`output_archive`), while `unpack` and `inspect` need `archive`. `pack` may
+download tools and start Podman for a cross-platform build. `unpack` only
+extracts files; it never installs RPM or APT packages or restores a Python
+`.venv`. Use the explicit CLI commands for those later steps.
+
 ## Use
 
 Packing is directory based, like mise itself: run it in the project whose

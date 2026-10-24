@@ -26,6 +26,7 @@ Usage:
   ofpack pack    [flags]            Pack global plus this directory and descendant mise scopes
   ofpack unpack  -f ARCHIVE [flags] Unpack an archive (no network needed)
   ofpack inspect -f ARCHIVE         Show what an archive contains
+  ofpack mcp     serve              Serve pack, unpack and inspect over MCP stdio
   ofpack env     --dest DIR         Print the shell setup for an unpacked tree
   ofpack direnv  init [flags]       Hook a directory up to its packed mise scope
   ofpack packages install          Install an archive's OS packages (explicit, never automatic)
@@ -94,6 +95,8 @@ func main() {
 		err = cmdUnpack(os.Args[2:])
 	case "inspect":
 		err = cmdInspect(os.Args[2:])
+	case "mcp":
+		err = cmdMCP(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "direnv":
