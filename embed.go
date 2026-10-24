@@ -13,7 +13,7 @@ import (
 // pattern cannot exclude them) but are skipped when the source is written
 // out; they add a few dozen kilobytes.
 //
-//go:embed go.mod *.go internal/ofpack
+//go:embed go.mod *.go internal/ofpack internal/version
 var sourceFS embed.FS
 
 // embeddedSource is sourceFS as a plain fs.FS.

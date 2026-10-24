@@ -50,3 +50,33 @@ func TestEveryRootGoFileIsEmbedded(t *testing.T) {
 		t.Errorf("embed.go names files individually, so a new one would be left out:\n%s", embedLine)
 	}
 }
+
+// The embedded source has to include every package the program needs,
+// internal/version among them. ofpack compiles that source to produce the
+// bin/ofpack an archive carries, so a package missing from the embed is a
+// cross pack that fails to build - and if it were the version package, a
+// bundled binary reporting something other than the one that packed it.
+func TestEmbeddedSourceCoversEveryInternalPackage(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = entries
+	internals, err := os.ReadDir(filepath.Join("..", "..", "internal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedFile, err := os.ReadFile(filepath.Join("..", "..", "embed.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range internals {
+		if !e.IsDir() {
+			continue
+		}
+		want := "internal/" + e.Name()
+		if !strings.Contains(string(embedFile), want) {
+			t.Errorf("embed.go does not include %s; a cross pack would fail to build the bundled ofpack", want)
+		}
+	}
+}

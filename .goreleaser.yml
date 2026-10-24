@@ -1,0 +1,41 @@
+version: 2
+
+# release-please creates the GitHub release and the tag; GoReleaser only
+# attaches the binaries to the release that is already there.
+release:
+  mode: keep-existing
+
+builds:
+  - binary: ofpack
+    # The platforms ofpack itself supports. Windows is not among them: the
+    # archive format carries unix symlinks and file modes, and unpack is
+    # built around them.
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      # Statically linked, so the binary runs on a disconnected machine
+      # whatever its glibc happens to be - which is the whole point of the
+      # tool. It is also what makes the bundled bin/ofpack portable.
+      - CGO_ENABLED=0
+    # No -X for the version: it lives in internal/version as a constant, so
+    # that the copy ofpack compiles from embedded source reports the same
+    # one. Injecting it here would work for this binary and silently not
+    # for that one.
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc

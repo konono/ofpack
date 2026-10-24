@@ -11,10 +11,14 @@ import (
 	"strings"
 
 	"ofpack/internal/ofpack"
+	ofversion "ofpack/internal/version"
 )
 
-// version is overridable at build time: -ldflags "-X main.version=v1.2.3".
-var version = "dev"
+// version is the single compiled-in constant from internal/version. It is
+// not an -ldflags variable: the bin/ofpack an archive carries is built from
+// embedded source without those flags, so a linker-injected version was
+// missing from exactly the binary that travels to the disconnected machine.
+const version = ofversion.Version
 
 const usage = `ofpack - carry a mise toolchain to a disconnected machine
 

@@ -863,6 +863,75 @@ outside RPM and .deb are not in scope here.
   target rather than during a cross-platform pack. This is one host, one
   emulator and one uv version, not a general statement about uv.
 
+## Releases
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please)
+and built by [GoReleaser](https://goreleaser.com/), both from GitHub Actions.
+Nothing is published by hand.
+
+### How a release happens
+
+1. Commits land on `main` using [Conventional
+   Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, …).
+2. `release-please` keeps a release pull request open, with the next version
+   and the changelog derived from those commits.
+3. Merging that pull request creates the tag and the GitHub release, and
+   rewrites the version constant and `.release-please-manifest.json`.
+4. GoReleaser builds the binaries **from that tag** and attaches them to the
+   release.
+5. A verification job downloads what was published and checks it: all four
+   platform archives present, checksums matching, and the binary reporting
+   the tag's version.
+
+### What is distributed
+
+| | amd64 | arm64 |
+| --- | --- | --- |
+| linux | `ofpack_linux_amd64.tar.gz` | `ofpack_linux_arm64.tar.gz` |
+| darwin | `ofpack_darwin_amd64.tar.gz` | `ofpack_darwin_arm64.tar.gz` |
+
+Plus `checksums.txt`. There is no Windows build: the archive format relies on
+unix symlinks and file modes, and unpack is built around them.
+
+Binaries are built with `CGO_ENABLED=0`. A dynamically linked ofpack would
+need a matching libc on the disconnected machine, which is precisely what
+cannot be assumed there — and the same binary is what gets bundled into an
+archive as `bin/ofpack`.
+
+### One version, three places
+
+The version lives in `internal/version/version.go` as a **constant**, not as
+an `-ldflags` variable:
+
+```go
+// x-release-please-start-version
+const Version = "0.1.0"
+// x-release-please-end
+```
+
+This matters because ofpack compiles a second copy of itself: `pack --target`
+builds the `bin/ofpack` that travels inside an archive from source embedded
+in the binary. That build cannot receive the linker flags the release build
+used, so a version injected at link time was present in the binary you ran
+and absent from the one the archive carried, which reported `dev`. A
+constant is compiled into both.
+
+CI checks that the constant, the built binary and the release manifest all
+agree.
+
+### Repository settings the workflows need
+
+* **`RELEASE_PLEASE_TOKEN`** — a secret holding a token that may open pull
+  requests and create releases. The default `GITHUB_TOKEN` is not used for
+  this, because releases it creates do not trigger other workflows.
+* **`GITHUB_TOKEN`** — provided automatically; GoReleaser and the
+  verification job use it to attach and download artifacts.
+* **Workflow permissions** — `contents: write` and `pull-requests: write` at
+  the workflow level, so release-please can maintain its pull request and
+  GoReleaser can upload to the release.
+
+No container images are published; ofpack ships as binaries only.
+
 ## Development
 
 ```sh
