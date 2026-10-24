@@ -29,13 +29,9 @@ const (
 	// preserved along with the install trees.
 	CatalogDir = ".mise"
 
-	// The schema numbers below start at 4 because 1, 2 and 3 belong to
-	// archives produced by mpack, the name this tool had before. The rename
-	// changed the archive layout - the bundled unpacker is bin/ofpack where
-	// it used to be bin/mpack - so an mpack archive is not an ofpack archive
-	// and must not be unpacked as one. Numbering them apart makes each tool
-	// refuse the other's archives outright instead of dropping the parts it
-	// does not recognise.
+	// Schema numbers 1, 2 and 3 describe an incompatible older layout.
+	// Keeping the current layouts in a separate range prevents an older
+	// unpacker from silently omitting archive members it does not know.
 
 	// SchemaVersion is what a plain archive declares. An ofpack that
 	// predates a layout change must refuse such an archive rather than
@@ -57,8 +53,7 @@ const (
 	// the packages/ directory and report success.
 	SchemaVersionPackages = 7
 
-	// legacyMaxSchema is the highest schema mpack ever wrote. Archives at or
-	// below it get an explanation rather than a bare "unsupported".
+	// legacyMaxSchema is the highest schema with the incompatible layout.
 	legacyMaxSchema = 3
 )
 

@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ofpack/internal/ofpack"
-	ofversion "ofpack/internal/version"
+	"github.com/konono/ofpack/internal/ofpack"
+	ofversion "github.com/konono/ofpack/internal/version"
 )
 
 // version is the single compiled-in constant from internal/version. It is

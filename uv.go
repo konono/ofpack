@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ofpack/internal/ofpack"
+	"github.com/konono/ofpack/internal/ofpack"
 )
 
 // uvPack packs a uv Python project: the target's Python and uv, plus every

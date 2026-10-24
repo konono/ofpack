@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ofpack/internal/ofpack"
+	"github.com/konono/ofpack/internal/ofpack"
 )
 
 // packageOptions are the --packages flags, gathered so the pack paths can

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"ofpack/internal/ofpack"
+	"github.com/konono/ofpack/internal/ofpack"
 )
 
 // readArchiveManifest returns an archive's manifest and entry names.

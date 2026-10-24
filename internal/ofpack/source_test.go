@@ -13,7 +13,7 @@ import (
 // the omission only surfaced as an undefined symbol during a cross pack.
 func TestSourceCompleteSpotsAMissingFile(t *testing.T) {
 	src := fstest.MapFS{
-		"go.mod":                      {Data: []byte("module ofpack\n")},
+		"go.mod":                      {Data: []byte("module github.com/konono/ofpack\n")},
 		"main.go":                     {Data: []byte("package main\n")},
 		"internal/ofpack/manifest.go": {Data: []byte("package ofpack\n")},
 	}

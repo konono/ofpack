@@ -140,21 +140,7 @@ func checkSchema(schema int) error {
 		}
 	}
 	if schema > 0 && schema <= legacyMaxSchema {
-		// Produced by mpack, the name this tool had before. The layout
-		// changed with the rename, so unpacking it here would install a tree
-		// that is subtly not what the archive describes.
-		return fmt.Errorf(`archive schema %d was produced by mpack, the name this tool had before it became ofpack.
-
-The layout changed with the rename - the bundled unpacker is bin/ofpack where mpack wrote bin/mpack - so this archive is not an ofpack archive and is refused rather than unpacked in part. Either:
-
-  - unpack it with mpack. Unless the archive was packed with --no-unpacker it
-    carries one, so check before relying on it:
-      mkdir -p /tmp/mpack-boot
-      tar -xzf ARCHIVE -C /tmp/mpack-boot bin/mpack
-      /tmp/mpack-boot/bin/mpack unpack -f ARCHIVE
-    If there is no bin/mpack in it, supply an mpack binary yourself.
-
-  - or re-pack the source with ofpack, which produces schema %d and up`,
+		return fmt.Errorf("archive schema %d uses an unsupported layout; ofpack requires schema %d or newer. Re-create the archive with a current ofpack",
 			schema, SchemaVersion)
 	}
 	return fmt.Errorf("archive schema %d is not supported by this ofpack (it understands %v); a newer ofpack can unpack it, and unpacking it with this one would silently leave parts out",

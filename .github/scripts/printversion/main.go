@@ -6,7 +6,7 @@ package main
 import (
 	"fmt"
 
-	"ofpack/internal/version"
+	"github.com/konono/ofpack/internal/version"
 )
 
 func main() { fmt.Println(version.Version) }

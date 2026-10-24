@@ -575,32 +575,24 @@ func TestUnpackRefusesSymlinkedDest(t *testing.T) {
 	}
 }
 
-// Archives made by mpack, the name this tool had before, use schema 1 to 3.
-// The rename moved the bundled unpacker from bin/mpack to bin/ofpack, so an
-// mpack archive is not an ofpack archive: unpacking one here would install a
-// tree that is quietly not what the archive describes. It is refused, and
-// the refusal says how to get at the contents.
-func TestLegacyMpackArchivesAreRefusedWithAnExplanation(t *testing.T) {
+// Older archive layouts must be refused before they can be unpacked in part.
+func TestOlderSchemasAreRefusedWithAnExplanation(t *testing.T) {
 	for schema := 1; schema <= legacyMaxSchema; schema++ {
 		err := checkSchema(schema)
 		if err == nil {
-			t.Fatalf("schema %d is an mpack archive and must not be accepted", schema)
+			t.Fatalf("schema %d uses an unsupported layout and must not be accepted", schema)
 		}
-		// The bundled mpack is only there when the archive was not packed with
-		// --no-unpacker, so the advice has to say so rather than promise it.
-		for _, want := range []string{"mpack", "bin/ofpack", "bin/mpack", "re-pack", "--no-unpacker"} {
+		for _, want := range []string{"unsupported layout", "Re-create the archive", "ofpack"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("schema %d: the refusal should mention %q:\n%v", schema, want, err)
 			}
 		}
 	}
 
-	// Every schema ofpack writes is above the range mpack understood, so an
-	// mpack binary refuses an ofpack archive too rather than dropping the
-	// parts it does not know.
+	// Current schemas stay above the incompatible range.
 	for _, s := range supportedSchemas {
 		if s <= legacyMaxSchema {
-			t.Errorf("schema %d overlaps the mpack range, so mpack would accept an ofpack archive", s)
+			t.Errorf("schema %d overlaps the incompatible range", s)
 		}
 		if err := checkSchema(s); err != nil {
 			t.Errorf("ofpack must accept its own schema %d: %v", s, err)
@@ -620,7 +612,7 @@ func TestLegacyArchiveWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan.Manifest.Schema = legacyMaxSchema // as mpack would have written it
+	plan.Manifest.Schema = legacyMaxSchema
 	var buf bytes.Buffer
 	if err := plan.Write(&buf); err != nil {
 		t.Fatal(err)

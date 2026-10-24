@@ -12,8 +12,12 @@ Built with the Go standard library only.
 ## Install
 
 ```sh
-go build -o ofpack .
+go install github.com/konono/ofpack@latest
+ofpack version
 ```
+
+Make sure the Go binary directory (`$(go env GOPATH)/bin`, or `GOBIN` if set)
+is on your `PATH`.
 
 ## Use
 
@@ -902,34 +906,6 @@ agree.
   GoReleaser can upload to the release.
 
 No container images are published; ofpack ships as binaries only.
-
-## Migrating from mpack
-
-Earlier versions of this project were named mpack. Their archives use a
-different layout (`bin/mpack` instead of `bin/ofpack`) and schema versions 1–3.
-ofpack refuses those archives so it cannot silently omit part of the contents.
-Older mpack binaries likewise refuse ofpack archives, which use schema 4 or
-higher.
-
-To use an existing mpack archive, unpack it with mpack:
-
-```sh
-mkdir -p /tmp/mpack-boot
-tar -xzf old.tar.gz -C /tmp/mpack-boot bin/mpack
-/tmp/mpack-boot/bin/mpack unpack -f old.tar.gz
-```
-
-An archive made with `--no-unpacker` has no `bin/mpack`; in that case, supply
-an mpack binary separately. If you still have the source environment, you can
-instead create a new archive with ofpack:
-
-```sh
-cd ~/work/myapp
-ofpack pack -o myapp.ofpack.tar.gz
-```
-
-An existing unpacked `.mpack/` tree continues to work with its own
-`bin/mpack`. ofpack does not change it.
 
 ## Development
 
