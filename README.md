@@ -22,8 +22,7 @@ is on your `PATH`.
 ### Use from an AI agent (MCP)
 
 `ofpack mcp serve` exposes the `pack`, `unpack`, and `inspect` tools over local
-MCP stdio. Install an ofpack build that has this command first. Until the next
-release, build the current checkout with `go install .`; after release, use the
+MCP stdio. Install ofpack v0.2.0 or newer with the
 `go install github.com/konono/ofpack@latest` command above. Register the full
 binary path so the agent can find it even if its `PATH` differs from your shell:
 Check that `"$(command -v ofpack)" help` lists `ofpack mcp serve` first; an
