@@ -9,35 +9,6 @@ directory's version selection, the installed binaries, and mise itself in one
 
 Built with the Go standard library only.
 
-## Archives made by mpack
-
-ofpack was called mpack. The rename changed the archive layout — the bundled
-unpacker is `bin/ofpack` where mpack wrote `bin/mpack` — so **ofpack cannot
-unpack an mpack archive** and refuses one rather than installing a tree that
-is quietly not what the archive describes. Those archives declare schema 1 to
-3; everything ofpack writes is schema 4 or higher, so an mpack binary refuses
-an ofpack archive for the same reason.
-
-There are two ways across:
-
-```sh
-# unpack it with mpack, which the archive carries unless it was packed
-# with --no-unpacker
-mkdir -p /tmp/mpack-boot
-tar -xzf old.tar.gz -C /tmp/mpack-boot bin/mpack
-/tmp/mpack-boot/bin/mpack unpack -f old.tar.gz
-
-# or re-pack the source with ofpack
-cd ~/work/myapp && ofpack pack -o myapp.ofpack.tar.gz
-```
-
-An archive packed with `--no-unpacker` has no `bin/mpack` in it, so the first
-route needs an mpack binary from elsewhere; re-packing with ofpack avoids
-that.
-
-An unpacked mpack tree keeps working; it is `.mpack/` with its own
-`bin/mpack`, and ofpack does not touch it.
-
 ## Install
 
 ```sh
@@ -931,6 +902,34 @@ agree.
   GoReleaser can upload to the release.
 
 No container images are published; ofpack ships as binaries only.
+
+## Migrating from mpack
+
+Earlier versions of this project were named mpack. Their archives use a
+different layout (`bin/mpack` instead of `bin/ofpack`) and schema versions 1–3.
+ofpack refuses those archives so it cannot silently omit part of the contents.
+Older mpack binaries likewise refuse ofpack archives, which use schema 4 or
+higher.
+
+To use an existing mpack archive, unpack it with mpack:
+
+```sh
+mkdir -p /tmp/mpack-boot
+tar -xzf old.tar.gz -C /tmp/mpack-boot bin/mpack
+/tmp/mpack-boot/bin/mpack unpack -f old.tar.gz
+```
+
+An archive made with `--no-unpacker` has no `bin/mpack`; in that case, supply
+an mpack binary separately. If you still have the source environment, you can
+instead create a new archive with ofpack:
+
+```sh
+cd ~/work/myapp
+ofpack pack -o myapp.ofpack.tar.gz
+```
+
+An existing unpacked `.mpack/` tree continues to work with its own
+`bin/mpack`. ofpack does not change it.
 
 ## Development
 
